@@ -17,6 +17,52 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::Path;
 
+fn is_external_local_skill_dir(path: &Path) -> crate::shared::error::AppResult<bool> {
+    if !path.exists() || is_managed_dir(path) {
+        return Ok(false);
+    }
+    if is_symlink(path)? {
+        return Ok(true);
+    }
+    Ok(path.is_dir() && has_skill_md(path))
+}
+
+fn local_source_cli_key(source_git_url: &str) -> Option<&str> {
+    source_git_url
+        .strip_prefix("local://")
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+}
+
+fn ensure_ssot_dir_exists<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    skill: &InstalledSkillSummary,
+    ssot_dir: &Path,
+) -> crate::shared::error::AppResult<()> {
+    if ssot_dir.exists() {
+        return Ok(());
+    }
+
+    let Some(source_cli_key) = local_source_cli_key(&skill.source_git_url) else {
+        return Err("SKILL_SSOT_MISSING: ssot skill dir not found"
+            .to_string()
+            .into());
+    };
+
+    validate_cli_key(source_cli_key)?;
+    validate_relative_subdir(&skill.source_subdir)?;
+
+    let local_source_dir = cli_skills_root(app, source_cli_key)?.join(skill.source_subdir.trim());
+    if !local_source_dir.is_dir() || !has_skill_md(&local_source_dir) {
+        return Err("SKILL_SSOT_MISSING: ssot skill dir not found"
+            .to_string()
+            .into());
+    }
+
+    copy_dir_recursive(&local_source_dir, ssot_dir)?;
+    Ok(())
+}
+
 fn sync_to_cli<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     cli_key: &str,
@@ -32,9 +78,9 @@ fn sync_to_cli<R: tauri::Runtime>(
         if is_managed_dir(&target) {
             std::fs::remove_dir_all(&target)
                 .map_err(|e| format!("failed to remove {}: {e}", target.display()))?;
-        } else if is_symlink(&target)? {
-            // Compatibility: Link-based skill managers create symlinks in CLI skills dir.
-            // Keep unmanaged symlink untouched instead of treating it as a hard conflict.
+        } else if is_external_local_skill_dir(&target)? {
+            // Compatibility: external skill managers may own this local directory (symlink or plain dir).
+            // Keep external-owned targets untouched instead of treating them as hard conflicts.
             return Ok(());
         } else {
             return Err(format!("SKILL_TARGET_EXISTS_UNMANAGED: {}", target.display()).into());
@@ -56,8 +102,8 @@ fn remove_from_cli<R: tauri::Runtime>(
     if !target.exists() {
         return Ok(());
     }
-    if !is_managed_dir(&target) && is_symlink(&target)? {
-        // Do not remove unmanaged symlink targets owned by external tooling.
+    if is_external_local_skill_dir(&target)? {
+        // Do not remove unmanaged local skill targets owned by external tooling.
         return Ok(());
     }
     remove_managed_dir(&target)
@@ -105,7 +151,7 @@ fn remove_managed_targets_except<R: tauri::Runtime>(
                 .map_err(|e| format!("failed to remove {}: {e}", target.display()))?;
             continue;
         }
-        if is_symlink(&target)? {
+        if is_external_local_skill_dir(&target)? {
             continue;
         }
         return Err(format!("SKILL_REMOVE_BLOCKED_UNMANAGED: {}", target.display()).into());
@@ -288,11 +334,7 @@ pub fn set_enabled<R: tauri::Runtime>(
 
     let ssot_root = ssot_skills_root(app)?;
     let ssot_dir = ssot_root.join(&current.skill_key);
-    if !ssot_dir.exists() {
-        return Err("SKILL_SSOT_MISSING: ssot skill dir not found"
-            .to_string()
-            .into());
-    }
+    ensure_ssot_dir_exists(app, &current, &ssot_dir)?;
 
     if should_sync {
         if enabled {
@@ -351,7 +393,7 @@ pub fn uninstall<R: tauri::Runtime>(
     for cli_key in SUPPORTED_CLI_KEYS {
         let root = cli_skills_root(app, cli_key)?;
         let target = root.join(&skill.skill_key);
-        if target.exists() && !is_managed_dir(&target) && !is_symlink(&target)? {
+        if target.exists() && !is_managed_dir(&target) && !is_external_local_skill_dir(&target)? {
             return Err(format!("SKILL_REMOVE_BLOCKED_UNMANAGED: {}", target.display()).into());
         }
     }
@@ -388,11 +430,7 @@ pub fn return_to_local<R: tauri::Runtime>(
 
     let skill = get_skill_by_id(&conn, skill_id)?;
     let ssot_dir = ssot_skills_root(app)?.join(&skill.skill_key);
-    if !ssot_dir.exists() {
-        return Err("SKILL_SSOT_MISSING: ssot skill dir not found"
-            .to_string()
-            .into());
-    }
+    ensure_ssot_dir_exists(app, &skill, &ssot_dir)?;
 
     let cli_root = cli_skills_root(app, &cli_key)?;
     std::fs::create_dir_all(&cli_root)
