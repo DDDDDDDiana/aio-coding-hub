@@ -52,6 +52,14 @@ export function formatPercent(value: number | null | undefined, digits = 1) {
   return `${rounded.toFixed(d)}%`;
 }
 
+// Threshold above which a computed rate is considered unreliable when the
+// generation window (duration − TTFB) is very small relative to total duration.
+// Some upstream proxies buffer SSE responses, causing TTFB ≈ duration and an
+// inflated rate.  When detected we fall back to total-duration throughput.
+// See also: claude-code-hub `shouldHideOutputRate` (uses 5000; we use a lower
+// ceiling because falling back is less disruptive than hiding entirely).
+const OUTPUT_RATE_SANITY_CEIL = 5000;
+
 export function computeOutputTokensPerSecond(
   outputTokens: number | null | undefined,
   durationMs: number | null | undefined,
@@ -62,13 +70,22 @@ export function computeOutputTokensPerSecond(
   if (ttfbMs == null || !Number.isFinite(ttfbMs)) return null;
   const generationMs = durationMs - ttfbMs;
   if (!Number.isFinite(generationMs) || generationMs <= 0) {
-    // 回退：非流式响应或精度截断导致 ttfb == duration 时，使用总耗时计算整体吞吐速率
+    // Fallback: non-stream or precision truncation where ttfb == duration.
     if (outputTokens > 0) {
       return outputTokens / (durationMs / 1000);
     }
     return null;
   }
-  return outputTokens / (generationMs / 1000);
+  const rate = outputTokens / (generationMs / 1000);
+
+  // Sanity check: if the generation window is < 10% of total duration and the
+  // computed rate exceeds a reasonable ceiling, the TTFB is likely inflated
+  // (e.g. upstream proxy buffering SSE).  Fall back to total-duration throughput.
+  if (generationMs / durationMs < 0.1 && rate > OUTPUT_RATE_SANITY_CEIL) {
+    return outputTokens / (durationMs / 1000);
+  }
+
+  return rate;
 }
 
 export function formatTokensPerSecond(value: number | null | undefined) {

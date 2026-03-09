@@ -125,9 +125,9 @@ pub fn show_main_window(app: &tauri::AppHandle) {
 /// The window starts hidden (via `visible: false` in tauri.conf.json).
 /// On macOS we also hide the dock icon so the app is tray-only.
 #[cfg(desktop)]
-pub fn hide_main_window_on_startup(app: &tauri::AppHandle) {
+pub fn hide_main_window_on_startup(_app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
-    set_dock_visibility(app, false);
+    set_dock_visibility(_app, false);
 }
 
 #[cfg(target_os = "macos")]
