@@ -26,6 +26,7 @@ pub(crate) struct OAuthTokenSet {
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub(crate) struct OAuthLimitsResult {
+    pub limit_short_label: Option<String>,
     pub limit_5h_text: Option<String>,
     pub limit_weekly_text: Option<String>,
     pub raw_json: Option<serde_json::Value>,

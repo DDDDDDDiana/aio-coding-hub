@@ -7,6 +7,7 @@ mod error_code;
 mod errors;
 mod failover;
 mod forwarder;
+mod gemini_oauth;
 mod handler;
 mod http_util;
 mod logging;

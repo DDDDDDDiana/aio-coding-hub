@@ -20,6 +20,14 @@ import { providerBaseUrlSummary } from "./baseUrl";
 /** Module-level cache so OAuth limits survive tab switches / re-renders. */
 const oauthLimitsCache = new Map<number, OAuthLimitsResult>();
 
+function getOAuthShortWindowLabel(
+  provider: ProviderSummary,
+  oauthLimits: OAuthLimitsResult | null
+) {
+  if (provider.cli_key === "gemini") return "短窗";
+  return oauthLimits?.limit_short_label ?? "5h";
+}
+
 export type SortableProviderCardProps = {
   provider: ProviderSummary;
   circuit: GatewayProviderCircuitStatus | null;
@@ -106,6 +114,7 @@ export function SortableProviderCard({
     () => oauthLimitsCache.get(provider.id) ?? null
   );
   const [limitsLoading, setLimitsLoading] = useState(false);
+  const oauthShortLabel = getOAuthShortWindowLabel(provider, oauthLimits);
 
   useEffect(() => {
     // Disconnect switches auth_mode back to api_key; drop stale OAuth limits cache.
@@ -252,9 +261,9 @@ export function SortableProviderCard({
                   {oauthLimits?.limit_5h_text ? (
                     <span
                       className="shrink-0 rounded-full bg-amber-50 px-2 py-0.5 font-mono text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-                      title={`5h 用量: ${oauthLimits.limit_5h_text}`}
+                      title={`${oauthShortLabel} 用量: ${oauthLimits.limit_5h_text}`}
                     >
-                      5h: {oauthLimits.limit_5h_text}
+                      {oauthShortLabel}: {oauthLimits.limit_5h_text}
                     </span>
                   ) : null}
                   {oauthLimits?.limit_weekly_text ? (

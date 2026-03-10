@@ -32,6 +32,7 @@ use request_end_helpers::{
 use super::super::{
     errors::{classify_upstream_status, error_response},
     failover::{retry_backoff_delay, select_provider_base_url_for_request, FailoverDecision},
+    gemini_oauth,
     http_util::{
         build_response, has_gzip_content_encoding, has_non_identity_content_encoding,
         is_event_stream, maybe_gunzip_response_body_bytes_with_limit,
@@ -644,7 +645,7 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
         };
         let mut oauth_reactive_refreshed_once = false;
 
-        let provider_base_url_base = match select_provider_base_url_for_request(
+        let mut provider_base_url_base = match select_provider_base_url_for_request(
             &input.state,
             provider,
             &input.cli_key,
@@ -771,6 +772,78 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
             None
         };
 
+        let mut upstream_forwarded_path = input.forwarded_path.clone();
+        let mut upstream_query = input.query.clone();
+        let mut upstream_body_bytes = input.body_bytes.clone();
+        let mut strip_request_content_encoding = input.strip_request_content_encoding_seed;
+        let mut gemini_oauth_response_mode = None;
+        let mut thinking_signature_rectifier_retried = false;
+        let mut thinking_budget_rectifier_retried = false;
+
+        let is_gemini_oauth = provider.auth_mode == "oauth"
+            && oauth_adapter
+                .as_ref()
+                .map(|adapter| adapter.provider_type() == "gemini_oauth")
+                .unwrap_or(false);
+
+        if is_gemini_oauth {
+            match gemini_oauth::prepare_upstream_request(
+                &input.state.client,
+                effective_credential.trim(),
+                input.forwarded_path.as_str(),
+                input.query.as_deref(),
+                input.introspection_json.as_ref(),
+                &input.body_bytes,
+                input.requested_model.as_deref(),
+            )
+            .await
+            {
+                Ok(prepared) => {
+                    provider_base_url_base = prepared.base_url;
+                    upstream_forwarded_path = prepared.forwarded_path;
+                    upstream_query = prepared.query;
+                    upstream_body_bytes = prepared.body_bytes;
+                    strip_request_content_encoding = prepared.strip_request_content_encoding;
+                    gemini_oauth_response_mode = Some(prepared.response_mode);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        trace_id = %input.trace_id,
+                        cli_key = %input.cli_key,
+                        provider_id = provider_id,
+                        provider_name = %provider_name_base,
+                        "provider skipped by gemini oauth request translation: {}",
+                        err
+                    );
+                    attempts.push(FailoverAttempt {
+                        provider_id,
+                        provider_name: provider_name_base.clone(),
+                        base_url: provider_base_url_display.clone(),
+                        outcome: "skipped".to_string(),
+                        status: None,
+                        provider_index: None,
+                        retry_index: None,
+                        session_reuse: None,
+                        error_category: Some("auth"),
+                        error_code: Some(GatewayErrorCode::InternalError.as_str()),
+                        decision: Some("skip"),
+                        reason: Some(format!(
+                            "provider skipped by gemini oauth request translation: {err}"
+                        )),
+                        selection_method: Some(dc::SELECTION_METHOD_FILTERED),
+                        reason_code: None,
+                        attempt_started_ms: Some(started.elapsed().as_millis()),
+                        attempt_duration_ms: Some(0),
+                        circuit_state_before: None,
+                        circuit_state_after: None,
+                        circuit_failure_count: None,
+                        circuit_failure_threshold: None,
+                    });
+                    continue;
+                }
+            }
+        }
+
         let mut circuit_snapshot = gate_allow.circuit_after;
 
         providers_tried = providers_tried.saturating_add(1);
@@ -786,13 +859,6 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
             provider_index,
             session_reuse,
         };
-
-        let mut upstream_forwarded_path = input.forwarded_path.clone();
-        let mut upstream_query = input.query.clone();
-        let mut upstream_body_bytes = input.body_bytes.clone();
-        let mut strip_request_content_encoding = input.strip_request_content_encoding_seed;
-        let mut thinking_signature_rectifier_retried = false;
-        let mut thinking_budget_rectifier_retried = false;
 
         claude_model_mapping::apply_if_needed(
             ctx,
@@ -1039,6 +1105,7 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
                                 resp,
                                 status,
                                 response_headers,
+                                gemini_oauth_response_mode,
                             )
                             .await
                             {
@@ -1064,6 +1131,7 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
                             resp,
                             status,
                             response_headers,
+                            gemini_oauth_response_mode,
                         )
                         .await
                         {

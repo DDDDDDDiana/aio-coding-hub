@@ -222,6 +222,7 @@ describe("services/providers", () => {
 
   it("providerOAuthFetchLimits calls invokeTauriOrNull directly", async () => {
     vi.mocked(invokeTauriOrNull).mockResolvedValueOnce({
+      limit_short_label: "1h",
       limit_5h_text: "100 requests",
       limit_weekly_text: "1000 requests",
       raw_json: { key: "value" },
@@ -229,6 +230,7 @@ describe("services/providers", () => {
 
     const result = await providerOAuthFetchLimits(50);
     expect(result).toEqual({
+      limit_short_label: "1h",
       limit_5h_text: "100 requests",
       limit_weekly_text: "1000 requests",
       raw_json: { key: "value" },

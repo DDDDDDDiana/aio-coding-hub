@@ -136,6 +136,42 @@ describe("pages/providers/SortableProviderCard", () => {
     await waitFor(() => expect(vi.mocked(providerOAuthFetchLimits)).toHaveBeenCalledWith(1));
   });
 
+  it("renders provider-specific short-window labels for Gemini OAuth limits", async () => {
+    vi.mocked(providerOAuthFetchLimits).mockResolvedValueOnce({
+      limit_short_label: "短窗",
+      limit_5h_text: "88",
+      limit_weekly_text: "300",
+    });
+
+    renderCard({
+      id: 77,
+      cli_key: "gemini",
+      auth_mode: "oauth",
+    });
+
+    fireEvent.click(screen.getByText("OAuth"));
+
+    await waitFor(() => expect(screen.getByText("短窗: 88")).toBeInTheDocument());
+  });
+
+  it("forces Gemini OAuth limits to render with a generic short-window label", async () => {
+    vi.mocked(providerOAuthFetchLimits).mockResolvedValueOnce({
+      limit_short_label: "1h",
+      limit_5h_text: "88",
+      limit_weekly_text: "300",
+    });
+
+    renderCard({
+      id: 78,
+      cli_key: "gemini",
+      auth_mode: "oauth",
+    });
+
+    fireEvent.click(screen.getByText("OAuth"));
+
+    await waitFor(() => expect(screen.getByText("短窗: 88")).toBeInTheDocument());
+  });
+
   it("handles null result from fetchLimits", async () => {
     vi.mocked(providerOAuthFetchLimits).mockResolvedValueOnce(null);
 

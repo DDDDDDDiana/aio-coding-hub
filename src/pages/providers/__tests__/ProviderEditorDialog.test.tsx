@@ -374,6 +374,57 @@ describe("pages/providers/ProviderEditorDialog", () => {
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
+  it("shows OAuth mode for Gemini and reuses the same create-time login flow", async () => {
+    vi.mocked(providerUpsert).mockResolvedValueOnce({
+      id: 199,
+      cli_key: "gemini",
+      name: "Gemini OAuth",
+    } as any);
+    vi.mocked(providerOAuthStartFlow).mockResolvedValueOnce({
+      success: true,
+      provider_type: "gemini_oauth",
+      expires_at: 1700000000,
+    });
+    vi.mocked(providerOAuthStatus).mockResolvedValueOnce({
+      connected: true,
+      provider_type: "gemini_oauth",
+      email: "gemini@example.com",
+      expires_at: 1700000000,
+      has_refresh_token: true,
+    });
+    vi.mocked(providerOAuthFetchLimits).mockResolvedValueOnce({
+      limit_short_label: "1h",
+      limit_5h_text: "60",
+      limit_weekly_text: "300",
+    });
+
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="gemini"
+        onSaved={onSaved}
+        onOpenChange={onOpenChange}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.click(dialog.getByText("OAuth 登录"));
+    fireEvent.change(dialog.getByPlaceholderText("default"), {
+      target: { value: "Gemini OAuth" },
+    });
+    fireEvent.click(dialog.getByRole("button", { name: "OAuth 登录" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerOAuthStartFlow)).toHaveBeenCalledWith("gemini", 199)
+    );
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith("gemini"));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
   it("shows toast when OAuth login is attempted without name in create mode", async () => {
     render(
       <ProviderEditorDialog

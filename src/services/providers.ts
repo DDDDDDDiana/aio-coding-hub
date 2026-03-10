@@ -164,6 +164,7 @@ export async function providerOAuthStatus(providerId: number): Promise<{
 }
 
 export type OAuthLimitsResult = {
+  limit_short_label?: string | null;
   limit_5h_text?: string | null;
   limit_weekly_text?: string | null;
   raw_json?: Record<string, unknown> | null;

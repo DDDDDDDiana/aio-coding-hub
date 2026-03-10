@@ -1,6 +1,6 @@
 //! Usage: Handle successful non-SSE upstream responses inside `failover_loop::run`.
 
-use super::super::super::{provider_router, GatewayErrorCode};
+use super::super::super::{gemini_oauth, provider_router, GatewayErrorCode};
 use super::*;
 use crate::shared::mutex_ext::MutexExt;
 
@@ -12,6 +12,7 @@ pub(super) async fn handle_success_non_stream(
     resp: reqwest::Response,
     status: StatusCode,
     mut response_headers: HeaderMap,
+    gemini_oauth_response_mode: Option<gemini_oauth::GeminiOAuthResponseMode>,
 ) -> LoopControl {
     let common = CommonCtxOwned::from(ctx);
     let provider_ctx_owned = ProviderCtxOwned::from(provider_ctx);
@@ -48,9 +49,8 @@ pub(super) async fn handle_success_non_stream(
         abort_guard,
     } = loop_state;
 
-    {
-        strip_hop_headers(&mut response_headers);
-
+    strip_hop_headers(&mut response_headers);
+    if gemini_oauth_response_mode.is_none() {
         let should_gunzip = has_gzip_content_encoding(&response_headers);
 
         match resp.content_length() {
@@ -334,6 +334,11 @@ pub(super) async fn handle_success_non_stream(
         &mut response_headers,
         MAX_NON_SSE_BODY_BYTES,
     );
+
+    body_bytes = gemini_oauth::translate_response_body(body_bytes, gemini_oauth_response_mode);
+    if gemini_oauth_response_mode.is_some() {
+        response_headers.remove(header::CONTENT_LENGTH);
+    }
 
     let enable_response_fixer_for_this_response =
         enable_response_fixer && !has_non_identity_content_encoding(&response_headers);

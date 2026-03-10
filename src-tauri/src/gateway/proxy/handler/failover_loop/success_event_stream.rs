@@ -1,5 +1,6 @@
 //! Usage: Handle successful event-stream upstream responses inside `failover_loop::run`.
 
+use super::super::super::gemini_oauth;
 use super::*;
 
 pub(super) async fn handle_success_event_stream(
@@ -10,6 +11,7 @@ pub(super) async fn handle_success_event_stream(
     resp: reqwest::Response,
     status: StatusCode,
     mut response_headers: HeaderMap,
+    gemini_oauth_response_mode: Option<gemini_oauth::GeminiOAuthResponseMode>,
 ) -> LoopControl {
     let common = CommonCtxOwned::from(ctx);
     let provider_ctx_owned = ProviderCtxOwned::from(provider_ctx);
@@ -273,6 +275,8 @@ pub(super) async fn handle_success_event_stream(
             (true, true) => {
                 let upstream =
                     GunzipStream::new(FirstChunkStream::new(first_chunk, resp.bytes_stream()));
+                let upstream =
+                    gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
                 let upstream = response_fixer::ResponseFixerStream::new(
                     upstream,
                     response_fixer_stream_config,
@@ -297,6 +301,8 @@ pub(super) async fn handle_success_event_stream(
             }
             (true, false) => {
                 let upstream = FirstChunkStream::new(first_chunk, resp.bytes_stream());
+                let upstream =
+                    gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
                 let upstream = response_fixer::ResponseFixerStream::new(
                     upstream,
                     response_fixer_stream_config,
@@ -322,6 +328,8 @@ pub(super) async fn handle_success_event_stream(
             (false, true) => {
                 let upstream =
                     GunzipStream::new(FirstChunkStream::new(first_chunk, resp.bytes_stream()));
+                let upstream =
+                    gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
                 if use_sse_relay {
                     spawn_usage_sse_relay_body(
                         upstream,
@@ -341,6 +349,8 @@ pub(super) async fn handle_success_event_stream(
             }
             (false, false) => {
                 let upstream = FirstChunkStream::new(first_chunk, resp.bytes_stream());
+                let upstream =
+                    gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
                 if use_sse_relay {
                     spawn_usage_sse_relay_body(
                         upstream,

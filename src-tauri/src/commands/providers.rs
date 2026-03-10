@@ -473,8 +473,16 @@ pub(crate) async fn provider_oauth_start_flow(
         authorize_url.push_str(&crate::gateway::util::encode_url_component(value));
     }
 
-    // Force a fresh login session to avoid stale PKCE/state conflicts on retry.
-    authorize_url.push_str("&prompt=login");
+    // Force a fresh login session to avoid stale PKCE/state conflicts on retry,
+    // but only if the adapter hasn't already set a `prompt` parameter (e.g. Gemini
+    // uses `prompt=consent` to guarantee refresh token issuance from Google).
+    let adapter_sets_prompt = adapter
+        .extra_authorize_params()
+        .iter()
+        .any(|(k, _)| *k == "prompt");
+    if !adapter_sets_prompt {
+        authorize_url.push_str("&prompt=login");
+    }
 
     // 6. Open browser
     let _ = tauri_plugin_opener::open_url(&authorize_url, None::<&str>);
@@ -726,6 +734,9 @@ pub(crate) async fn provider_oauth_fetch_limits(
         .await
         .map_err(|e| format!("fetch_limits failed: {e}"))?;
 
+    let limit_short_label =
+        normalize_oauth_short_window_label(adapter.cli_key(), limits.limit_short_label.as_deref());
+
     // If the adapter already parsed limit texts, use them directly.
     // Otherwise, try to parse from raw_json based on cli_key.
     let (limit_5h_text, limit_weekly_text) =
@@ -746,10 +757,33 @@ pub(crate) async fn provider_oauth_fetch_limits(
         };
 
     Ok(serde_json::json!({
+        "limit_short_label": limit_short_label,
         "limit_5h_text": limit_5h_text,
         "limit_weekly_text": limit_weekly_text,
         "raw_json": limits.raw_json,
     }))
+}
+
+fn default_oauth_short_window_label(cli_key: &str) -> Option<String> {
+    match cli_key {
+        "codex" | "claude" => Some("5h".to_string()),
+        "gemini" => Some("短窗".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_oauth_short_window_label(
+    cli_key: &str,
+    adapter_label: Option<&str>,
+) -> Option<String> {
+    let adapter_label = adapter_label
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    match cli_key {
+        "gemini" => Some("短窗".to_string()),
+        _ => adapter_label.or_else(|| default_oauth_short_window_label(cli_key)),
+    }
 }
 
 fn parse_remaining_percent_from_window(window: &serde_json::Value) -> Option<f64> {
@@ -928,5 +962,21 @@ mod tests {
 
         assert!(command.starts_with("powershell -NoLogo -NoExit -ExecutionPolicy Bypass -File"));
         assert!(command.contains("\"C:\\\\Temp\\\\aio_launcher.ps1\""));
+    }
+
+    #[test]
+    fn normalize_oauth_short_window_label_forces_gemini_to_short_window() {
+        assert_eq!(
+            normalize_oauth_short_window_label("gemini", Some("1h")).as_deref(),
+            Some("短窗")
+        );
+        assert_eq!(
+            normalize_oauth_short_window_label("gemini", None).as_deref(),
+            Some("短窗")
+        );
+        assert_eq!(
+            normalize_oauth_short_window_label("codex", Some("custom")).as_deref(),
+            Some("custom")
+        );
     }
 }
