@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.30.13](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.30.12...aio-coding-hub-v0.30.13) (2026-03-10)
+
+
+### Features
+
+* add gemini oauth code assist proxy support ([4a892d0](https://github.com/dyndynjyxa/aio-coding-hub/commit/4a892d035fbcdd5273c909de063eede5d42598fa))
+* **Oauth:** adding gemini Oauth support ([fd1eb79](https://github.com/dyndynjyxa/aio-coding-hub/commit/fd1eb7933410510e9ee46e469234d91658a49fcf))
+* **providers:** 支持复制供应商配置并预填创建表单 ([c8fb707](https://github.com/dyndynjyxa/aio-coding-hub/commit/c8fb7078131ad67e4d2895f81467a9358b897d2c))
+
+
+### Bug Fixes
+
+* **ci:** satisfy rust clippy checks ([38d0bc0](https://github.com/dyndynjyxa/aio-coding-hub/commit/38d0bc0081cc90b24bd83e4ced30566d861ea69b))
+* **cli-proxy:** 修复 Codex CLI 在 Windows 下的沙箱配置与认证模式 ([b79d072](https://github.com/dyndynjyxa/aio-coding-hub/commit/b79d072f39405c15125a8a6391bff122c9a5f315))
+* **gateway:** allow failover success handler arg count ([0c559cb](https://github.com/dyndynjyxa/aio-coding-hub/commit/0c559cba801d59332a94eb650571487b6b18a53b))
+* **scripts:** 修复生成绑定文件格式化问题 ([9ff697b](https://github.com/dyndynjyxa/aio-coding-hub/commit/9ff697b6b8c93238f48518f27f274df33ba55a9a))
+
 ## [0.30.12](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.30.11...aio-coding-hub-v0.30.12) (2026-03-09)
 
 
