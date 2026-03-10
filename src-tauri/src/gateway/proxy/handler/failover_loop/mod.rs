@@ -909,6 +909,7 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
                 attempt_started_ms,
                 attempt_started,
                 circuit_before: &circuit_before,
+                gemini_oauth_response_mode,
             };
 
             let url = match build_target_url(
@@ -1105,7 +1106,6 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
                                 resp,
                                 status,
                                 response_headers,
-                                gemini_oauth_response_mode,
                             )
                             .await
                             {
@@ -1131,7 +1131,6 @@ pub(super) async fn run(mut input: RequestContext) -> Response {
                             resp,
                             status,
                             response_headers,
-                            gemini_oauth_response_mode,
                         )
                         .await
                         {

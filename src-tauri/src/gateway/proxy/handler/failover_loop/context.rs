@@ -1,6 +1,7 @@
 //! Usage: Shared context types for `failover_loop` internal submodules.
 
 use super::super::super::abort_guard::RequestAbortGuard;
+use super::super::super::gemini_oauth;
 use crate::circuit_breaker;
 use crate::gateway::events::FailoverAttempt;
 use crate::gateway::manager::GatewayAppState;
@@ -236,6 +237,7 @@ pub(super) struct AttemptCtx<'a> {
     pub(super) attempt_started_ms: u128,
     pub(super) attempt_started: Instant,
     pub(super) circuit_before: &'a circuit_breaker::CircuitSnapshot,
+    pub(super) gemini_oauth_response_mode: Option<gemini_oauth::GeminiOAuthResponseMode>,
 }
 
 pub(super) struct LoopState<'a> {

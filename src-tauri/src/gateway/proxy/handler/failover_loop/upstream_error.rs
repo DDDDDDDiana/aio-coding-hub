@@ -167,6 +167,7 @@ pub(super) async fn handle_non_success_response(
         attempt_started_ms,
         attempt_started,
         circuit_before,
+        ..
     } = attempt_ctx;
 
     let LoopState {

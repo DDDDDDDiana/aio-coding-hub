@@ -32,6 +32,7 @@ pub(super) async fn emit_attempt_event_and_log(
         attempt_started_ms,
         attempt_started,
         circuit_before: _,
+        ..
     } = attempt_ctx;
 
     let attempt_event = GatewayAttemptEvent {

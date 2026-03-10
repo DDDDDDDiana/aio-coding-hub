@@ -58,6 +58,7 @@ pub(super) async fn handle_thinking_rectifiers_400(
         attempt_started_ms,
         attempt_started,
         circuit_before,
+        ..
     } = attempt_ctx;
 
     let LoopState {

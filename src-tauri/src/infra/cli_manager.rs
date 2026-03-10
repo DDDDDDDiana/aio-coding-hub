@@ -239,12 +239,12 @@ fn write_claude_env(
 fn exe_names_for(cmd: &str) -> Vec<String> {
     #[cfg(windows)]
     {
-        return vec![
+        vec![
             format!("{cmd}.exe"),
             format!("{cmd}.cmd"),
             format!("{cmd}.bat"),
             cmd.to_string(),
-        ];
+        ]
     }
     #[cfg(not(windows))]
     {
@@ -364,11 +364,11 @@ fn run_in_login_shell(shell: &Path, script: &str) -> crate::shared::error::AppRe
     #[cfg(windows)]
     {
         let _ = script;
-        return Err(format!(
+        Err(format!(
             "login shell resolution is not supported on windows (shell={})",
             shell.display()
         )
-        .into());
+        .into())
     }
 
     #[cfg(not(windows))]

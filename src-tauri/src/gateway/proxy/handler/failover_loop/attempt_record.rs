@@ -64,6 +64,7 @@ async fn record_system_failure_and_decide_impl(
         attempt_started_ms,
         attempt_started,
         circuit_before,
+        ..
     } = attempt_ctx;
 
     let LoopState {
