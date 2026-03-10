@@ -7,6 +7,7 @@ import { ProvidersView } from "../ProvidersView";
 import { createTestQueryClient } from "../../../test/utils/reactQuery";
 import { copyText } from "../../../services/clipboard";
 import { logToConsole } from "../../../services/consoleLog";
+import { providerGetApiKey } from "../../../services/providers";
 import { gatewayKeys, providersKeys } from "../../../query/keys";
 import {
   useGatewayCircuitResetCliMutation,
@@ -61,6 +62,15 @@ vi.mock("@dnd-kit/utilities", () => ({
 vi.mock("sonner", () => ({ toast: vi.fn() }));
 vi.mock("../../../services/clipboard", () => ({ copyText: vi.fn() }));
 vi.mock("../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
+vi.mock("../../../services/providers", async () => {
+  const actual = await vi.importActual<typeof import("../../../services/providers")>(
+    "../../../services/providers"
+  );
+  return {
+    ...actual,
+    providerGetApiKey: vi.fn(),
+  };
+});
 
 vi.mock("../../../components/ClaudeModelValidationDialog", () => ({
   ClaudeModelValidationDialog: ({ open, onOpenChange }: any) =>
@@ -75,8 +85,13 @@ vi.mock("../../../components/ClaudeModelValidationDialog", () => ({
 }));
 
 vi.mock("../ProviderEditorDialog", () => ({
-  ProviderEditorDialog: ({ mode, cliKey, provider, onSaved, onOpenChange }: any) => (
-    <div data-testid="provider-editor">
+  ProviderEditorDialog: ({ mode, cliKey, provider, initialValues, onSaved, onOpenChange }: any) => (
+    <div
+      data-testid="provider-editor"
+      data-initial-name={initialValues?.name ?? ""}
+      data-api-key={initialValues?.api_key ?? ""}
+      data-auth-mode={initialValues?.auth_mode ?? ""}
+    >
       {mode}
       <button type="button" onClick={() => onSaved?.(cliKey ?? provider?.cli_key)}>
         saved
@@ -120,6 +135,7 @@ function renderWithQuery(element: ReactElement) {
 
 beforeEach(() => {
   vi.mocked(copyText).mockResolvedValue(undefined);
+  vi.mocked(providerGetApiKey).mockResolvedValue("sk-dup");
   vi.mocked(useProviderClaudeTerminalLaunchCommandMutation).mockReturnValue({
     mutateAsync: vi.fn().mockResolvedValue("bash '/tmp/aio.sh'"),
   } as any);
@@ -256,6 +272,119 @@ describe("pages/providers/ProvidersView", () => {
         orderedProviderIds: [2, 1],
       })
     );
+  });
+
+  it("duplicates a provider into a prefilled create dialog", async () => {
+    const providers = [
+      {
+        id: 1,
+        cli_key: "claude",
+        name: "P1",
+        enabled: true,
+        base_urls: ["https://a"],
+        base_url_mode: "order",
+        cost_multiplier: 1,
+        claude_models: { main_model: "claude-3" },
+        limit_5h_usd: 5,
+        limit_daily_usd: 10,
+        daily_reset_mode: "fixed",
+        daily_reset_time: "01:02:03",
+        limit_weekly_usd: 15,
+        limit_monthly_usd: 20,
+        limit_total_usd: 25,
+        tags: ["prod"],
+        note: "copied",
+        auth_mode: "api_key",
+      },
+      {
+        id: 2,
+        cli_key: "claude",
+        name: "P1 副本",
+        enabled: true,
+        base_urls: ["https://b"],
+        base_url_mode: "order",
+        cost_multiplier: 1,
+        claude_models: {},
+        auth_mode: "api_key",
+      },
+    ] as any[];
+
+    vi.mocked(useProvidersListQuery).mockReturnValue({
+      data: providers,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(useGatewayCircuitStatusQuery).mockReturnValue({
+      data: [],
+      isFetching: false,
+      error: null,
+      refetch: vi.fn().mockResolvedValue({ data: [] }),
+    } as any);
+    vi.mocked(useProviderSetEnabledMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProviderDeleteMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProvidersReorderMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useGatewayCircuitResetProviderMutation).mockReturnValue({
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitResetCliMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+
+    renderWithQuery(<ProvidersView activeCli="claude" setActiveCli={vi.fn()} />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "复制" })[0]!);
+
+    await waitFor(() => expect(providerGetApiKey).toHaveBeenCalledWith(1));
+
+    const createEditor = screen
+      .getAllByTestId("provider-editor")
+      .find((el) => el.textContent?.includes("create"));
+    expect(createEditor).toBeTruthy();
+    expect(createEditor).toHaveAttribute("data-initial-name", "P1 副本 2");
+    expect(createEditor).toHaveAttribute("data-api-key", "sk-dup");
+    expect(createEditor).toHaveAttribute("data-auth-mode", "api_key");
+  });
+
+  it("shows an explicit toast when duplicating a provider fails", async () => {
+    vi.mocked(providerGetApiKey).mockRejectedValueOnce(new Error("boom"));
+
+    const providers = [
+      {
+        id: 1,
+        cli_key: "claude",
+        name: "P1",
+        enabled: true,
+        base_urls: ["https://a"],
+        base_url_mode: "order",
+        cost_multiplier: 1,
+        claude_models: {},
+        auth_mode: "api_key",
+      },
+    ] as any[];
+
+    vi.mocked(useProvidersListQuery).mockReturnValue({
+      data: providers,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(useGatewayCircuitStatusQuery).mockReturnValue({
+      data: [],
+      isFetching: false,
+      error: null,
+      refetch: vi.fn().mockResolvedValue({ data: [] }),
+    } as any);
+    vi.mocked(useProviderSetEnabledMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProviderDeleteMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProvidersReorderMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useGatewayCircuitResetProviderMutation).mockReturnValue({
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitResetCliMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+
+    renderWithQuery(<ProvidersView activeCli="claude" setActiveCli={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("复制失败：Error: boom"));
+    expect(screen.queryByTestId("provider-editor")).not.toBeInTheDocument();
   });
 
   it("shows generate error when launch command mutation fails", async () => {

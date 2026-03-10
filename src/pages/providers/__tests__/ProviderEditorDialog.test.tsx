@@ -12,6 +12,7 @@ import {
   providerUpsert,
   type ProviderSummary,
 } from "../../../services/providers";
+import type { ProviderEditorInitialValues } from "../providerDuplicate";
 
 vi.mock("sonner", () => ({ toast: vi.fn() }));
 vi.mock("../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
@@ -60,6 +61,31 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     oauth_email: null,
     oauth_expires_at: null,
     oauth_last_error: null,
+    ...partial,
+  };
+}
+
+function makeInitialValues(
+  partial: Partial<ProviderEditorInitialValues> = {}
+): ProviderEditorInitialValues {
+  return {
+    name: "Existing 副本",
+    api_key: "sk-copy",
+    auth_mode: "api_key",
+    base_urls: ["https://example.com/v1"],
+    base_url_mode: "order",
+    claude_models: { main_model: "claude-copy" },
+    enabled: true,
+    cost_multiplier: 1.5,
+    limit_5h_usd: 5,
+    limit_daily_usd: 10,
+    daily_reset_mode: "fixed",
+    daily_reset_time: "01:02:03",
+    limit_weekly_usd: 15,
+    limit_monthly_usd: 20,
+    limit_total_usd: 25,
+    tags: ["prod"],
+    note: "copied",
     ...partial,
   };
 }
@@ -176,6 +202,64 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
     expect(onSaved).not.toHaveBeenCalled();
     expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("prefills create mode from initial values and saves as a new provider", async () => {
+    vi.mocked(providerUpsert).mockResolvedValue({
+      id: 2,
+      cli_key: "claude",
+      name: "Existing 副本",
+      base_urls: ["https://example.com/v1"],
+      base_url_mode: "order",
+      enabled: true,
+      cost_multiplier: 1.5,
+      claude_models: { main_model: "claude-copy" },
+      auth_mode: "api_key",
+    } as any);
+
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="claude"
+        initialValues={makeInitialValues()}
+        onSaved={onSaved}
+        onOpenChange={onOpenChange}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByDisplayValue("Existing 副本")).toBeInTheDocument();
+    expect(dialog.getByDisplayValue("https://example.com/v1")).toBeInTheDocument();
+    expect(dialog.getByDisplayValue("copied")).toBeInTheDocument();
+
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cli_key: "claude",
+          name: "Existing 副本",
+          api_key: "sk-copy",
+          base_urls: ["https://example.com/v1"],
+          base_url_mode: "order",
+          cost_multiplier: 1.5,
+          tags: ["prod"],
+          note: "copied",
+        })
+      )
+    );
+
+    const allCalls = vi.mocked(providerUpsert).mock.calls;
+    const lastCall = allCalls[allCalls.length - 1]?.[0];
+    expect(lastCall).toBeDefined();
+    expect(lastCall).not.toHaveProperty("provider_id");
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith("claude"));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
   it("supports edit mode, drives UI handlers, and blocks close while saving", async () => {
@@ -372,6 +456,30 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith("codex"));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("does not carry OAuth connection state when create mode starts from duplicate values", async () => {
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="codex"
+        initialValues={makeInitialValues({
+          auth_mode: "oauth",
+          api_key: "",
+          base_urls: [],
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText("未连接 OAuth")).toBeInTheDocument();
+
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(vi.mocked(toast)).toHaveBeenCalledWith("请先完成 OAuth 登录"));
   });
 
   it("shows toast when OAuth login is attempted without name in create mode", async () => {

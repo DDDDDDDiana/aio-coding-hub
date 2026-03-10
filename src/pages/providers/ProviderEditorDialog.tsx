@@ -44,6 +44,7 @@ import { formatUnixSeconds } from "../../utils/formatters";
 import { BaseUrlEditor } from "./BaseUrlEditor";
 import { LimitCard } from "./LimitCard";
 import { RadioButtonGroup } from "./RadioButtonGroup";
+import type { ProviderEditorInitialValues } from "./providerDuplicate";
 import type { BaseUrlRow, ProviderBaseUrlMode } from "./types";
 import { validateProviderClaudeModels } from "./validators";
 import { useForm } from "react-hook-form";
@@ -60,6 +61,7 @@ export type ProviderEditorDialogProps =
   | (ProviderEditorDialogBaseProps & {
       mode: "create";
       cliKey: CliKey;
+      initialValues?: ProviderEditorInitialValues | null;
     })
   | (ProviderEditorDialogBaseProps & {
       mode: "edit";
@@ -70,11 +72,69 @@ function cliNameFromKey(cliKey: CliKey) {
   return cliLongLabel(cliKey);
 }
 
+const DEFAULT_FORM_VALUES: ProviderEditorDialogFormInput = {
+  name: "",
+  api_key: "",
+  auth_mode: "api_key",
+  cost_multiplier: "1.0",
+  limit_5h_usd: "",
+  limit_daily_usd: "",
+  limit_weekly_usd: "",
+  limit_monthly_usd: "",
+  limit_total_usd: "",
+  daily_reset_mode: "fixed",
+  daily_reset_time: "00:00:00",
+  enabled: true,
+  note: "",
+};
+
+function valueOrEmpty(value: number | null | undefined) {
+  return value != null ? String(value) : "";
+}
+
+function buildFormValues(initialValues: ProviderEditorInitialValues | null) {
+  if (!initialValues) {
+    return { ...DEFAULT_FORM_VALUES };
+  }
+
+  return {
+    name: initialValues.name,
+    api_key: initialValues.api_key,
+    auth_mode: initialValues.auth_mode,
+    cost_multiplier: String(initialValues.cost_multiplier),
+    limit_5h_usd: valueOrEmpty(initialValues.limit_5h_usd),
+    limit_daily_usd: valueOrEmpty(initialValues.limit_daily_usd),
+    limit_weekly_usd: valueOrEmpty(initialValues.limit_weekly_usd),
+    limit_monthly_usd: valueOrEmpty(initialValues.limit_monthly_usd),
+    limit_total_usd: valueOrEmpty(initialValues.limit_total_usd),
+    daily_reset_mode: initialValues.daily_reset_mode,
+    daily_reset_time: initialValues.daily_reset_time,
+    enabled: initialValues.enabled,
+    note: initialValues.note,
+  };
+}
+
+function buildBaseUrlRows(
+  initialValues: ProviderEditorInitialValues | null,
+  newBaseUrlRow: (url?: string) => BaseUrlRow
+) {
+  const baseUrls = initialValues?.base_urls ?? [];
+  if (baseUrls.length > 0) {
+    return baseUrls.map((url) => newBaseUrlRow(url));
+  }
+  if (initialValues?.auth_mode === "oauth") {
+    return [] as BaseUrlRow[];
+  }
+  return [newBaseUrlRow()];
+}
+
 export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
   const { open, onOpenChange, onSaved } = props;
 
   const mode = props.mode;
   const cliKey = mode === "create" ? props.cliKey : props.provider.cli_key;
+  const createInitialValues = mode === "create" ? (props.initialValues ?? null) : null;
+  const isDuplicating = mode === "create" && createInitialValues != null;
   const editingProviderId = mode === "edit" ? props.provider.id : null;
   const editProvider = mode === "edit" ? props.provider : null;
 
@@ -110,21 +170,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
 
   const schema = useMemo(() => createProviderEditorDialogSchema({ mode }), [mode]);
   const form = useForm<ProviderEditorDialogFormInput>({
-    defaultValues: {
-      name: "",
-      api_key: "",
-      auth_mode: "api_key",
-      cost_multiplier: "1.0",
-      limit_5h_usd: "",
-      limit_daily_usd: "",
-      limit_weekly_usd: "",
-      limit_monthly_usd: "",
-      limit_total_usd: "",
-      daily_reset_mode: "fixed",
-      daily_reset_time: "00:00:00",
-      enabled: true,
-      note: "",
-    },
+    defaultValues: DEFAULT_FORM_VALUES,
   });
 
   const { register, reset, setValue, watch } = form;
@@ -138,9 +184,14 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
 
   const title =
     mode === "create"
-      ? `${cliNameFromKey(cliKey)} · 添加供应商`
+      ? `${cliNameFromKey(cliKey)} · ${isDuplicating ? "复制供应商" : "添加供应商"}`
       : `${cliNameFromKey(props.provider.cli_key)} · 编辑供应商`;
-  const description = mode === "create" ? "已锁定创建 CLI；如需切换请先关闭弹窗。" : undefined;
+  const description =
+    mode === "create"
+      ? isDuplicating
+        ? "已复制现有 Provider 配置；CLI 已锁定，请确认名称和认证信息后保存。"
+        : "已锁定创建 CLI；如需切换请先关闭弹窗。"
+      : undefined;
 
   useEffect(() => {
     if (!open) return;
@@ -149,30 +200,16 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
     apiKeyFetchedRef.current = false;
 
     if (mode === "create") {
-      setBaseUrlMode("order");
-      setBaseUrlRows([newBaseUrlRow()]);
+      setBaseUrlMode(createInitialValues?.base_url_mode ?? "order");
+      setBaseUrlRows(buildBaseUrlRows(createInitialValues, newBaseUrlRow));
       setPingingAll(false);
-      setClaudeModels({});
-      setTags([]);
+      setClaudeModels(createInitialValues?.claude_models ?? {});
+      setTags(createInitialValues?.tags ?? []);
       setTagInput("");
       setShowApiKey(false);
-      setAuthMode("api_key");
+      setAuthMode(createInitialValues?.auth_mode ?? "api_key");
       setOauthStatus(null);
-      reset({
-        name: "",
-        api_key: "",
-        auth_mode: "api_key",
-        cost_multiplier: "1.0",
-        limit_5h_usd: "",
-        limit_daily_usd: "",
-        limit_weekly_usd: "",
-        limit_monthly_usd: "",
-        limit_total_usd: "",
-        daily_reset_mode: "fixed",
-        daily_reset_time: "00:00:00",
-        enabled: true,
-        note: "",
-      });
+      reset(buildFormValues(createInitialValues));
       return;
     }
 
@@ -209,7 +246,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
     // Intentionally omitting props.provider fields to avoid resetting user edits
     // when the provider object reference changes from a background query refetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cliKey, editingProviderId, mode, open, reset]);
+  }, [cliKey, createInitialValues, editingProviderId, mode, open, reset]);
 
   useEffect(() => {
     if (editProvider?.id && editProvider.auth_mode === "oauth") {

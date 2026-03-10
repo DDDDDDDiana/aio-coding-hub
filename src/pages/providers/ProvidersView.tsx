@@ -17,7 +17,7 @@ import { ClaudeModelValidationDialog } from "../../components/ClaudeModelValidat
 import { logToConsole } from "../../services/consoleLog";
 import { copyText } from "../../services/clipboard";
 import type { GatewayProviderCircuitStatus } from "../../services/gateway";
-import type { CliKey, ProviderSummary } from "../../services/providers";
+import { providerGetApiKey, type CliKey, type ProviderSummary } from "../../services/providers";
 import { gatewayKeys, providersKeys } from "../../query/keys";
 import {
   useGatewayCircuitResetCliMutation,
@@ -37,10 +37,19 @@ import { EmptyState } from "../../ui/EmptyState";
 import { Spinner } from "../../ui/Spinner";
 import { ProviderEditorDialog } from "./ProviderEditorDialog";
 import { SortableProviderCard } from "./SortableProviderCard";
+import {
+  buildDuplicatedProviderInitialValues,
+  type ProviderEditorInitialValues,
+} from "./providerDuplicate";
 
 export type ProvidersViewProps = {
   activeCli: CliKey;
   setActiveCli: (cliKey: CliKey) => void;
+};
+
+type CreateDialogState = {
+  cliKey: CliKey;
+  initialValues: ProviderEditorInitialValues | null;
 };
 
 export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
@@ -98,15 +107,16 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
   const providersReorderMutation = useProvidersReorderMutation();
   const terminalLaunchCommandMutation = useProviderClaudeTerminalLaunchCommandMutation();
 
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createCliKeyLocked, setCreateCliKeyLocked] = useState<CliKey | null>(null);
-
+  const [createDialogState, setCreateDialogState] = useState<CreateDialogState | null>(null);
   const [editTarget, setEditTarget] = useState<ProviderSummary | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProviderSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [terminalCopyingByProviderId, setTerminalCopyingByProviderId] = useState<
     Record<number, boolean>
   >({});
+  const [duplicatingByProviderId, setDuplicatingByProviderId] = useState<Record<number, boolean>>(
+    {}
+  );
 
   const [validateDialogOpen, setValidateDialogOpen] = useState(false);
   const [validateProvider, setValidateProvider] = useState<ProviderSummary | null>(null);
@@ -149,7 +159,15 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
   useEffect(() => {
     setCircuitResetting({});
     setCircuitResettingAll(false);
+    setDuplicatingByProviderId({});
   }, [activeCli]);
+
+  function openCreateDialog(
+    cliKey: CliKey,
+    initialValues: ProviderEditorInitialValues | null = null
+  ) {
+    setCreateDialogState({ cliKey, initialValues });
+  }
 
   useEffect(() => {
     if (circuitAutoRefreshTimerRef.current != null) {
@@ -348,6 +366,37 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
     }
   }
 
+  async function duplicateProvider(provider: ProviderSummary) {
+    if (duplicatingByProviderId[provider.id]) return;
+    setDuplicatingByProviderId((cur) => ({ ...cur, [provider.id]: true }));
+
+    try {
+      const apiKey = provider.auth_mode === "api_key" ? await providerGetApiKey(provider.id) : null;
+      if (provider.auth_mode === "api_key" && (!apiKey || !apiKey.trim())) {
+        toast("复制失败：原 Provider 未保存 API Key");
+        return;
+      }
+
+      openCreateDialog(
+        provider.cli_key,
+        buildDuplicatedProviderInitialValues(provider, providersRef.current, apiKey)
+      );
+      logToConsole("info", "复制 Provider 配置", {
+        provider_id: provider.id,
+        cli_key: provider.cli_key,
+      });
+    } catch (err) {
+      logToConsole("error", "复制 Provider 配置失败", {
+        provider_id: provider.id,
+        cli_key: provider.cli_key,
+        error: String(err),
+      });
+      toast(`复制失败：${String(err)}`);
+    } finally {
+      setDuplicatingByProviderId((cur) => ({ ...cur, [provider.id]: false }));
+    }
+  }
+
   async function persistProvidersOrder(
     cliKey: CliKey,
     nextProviders: ProviderSummary[],
@@ -487,8 +536,7 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
 
             <Button
               onClick={() => {
-                setCreateCliKeyLocked(activeCli);
-                setCreateOpen(true);
+                openCreateDialog(activeCli);
               }}
               variant="secondary"
               size="sm"
@@ -537,6 +585,8 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
                       onValidateModel={
                         activeCli === "claude" ? requestValidateProviderModel : undefined
                       }
+                      onDuplicate={duplicateProvider}
+                      duplicateLoading={Boolean(duplicatingByProviderId[provider.id])}
                       onEdit={setEditTarget}
                       onDelete={setDeleteTarget}
                     />
@@ -557,15 +607,15 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
         provider={validateProvider}
       />
 
-      {createCliKeyLocked ? (
+      {createDialogState ? (
         <ProviderEditorDialog
           mode="create"
-          open={createOpen}
+          open={true}
           onOpenChange={(nextOpen) => {
-            setCreateOpen(nextOpen);
-            if (!nextOpen) setCreateCliKeyLocked(null);
+            if (!nextOpen) setCreateDialogState(null);
           }}
-          cliKey={createCliKeyLocked}
+          cliKey={createDialogState.cliKey}
+          initialValues={createDialogState.initialValues}
           onSaved={(cliKey) => {
             queryClient.invalidateQueries({ queryKey: providersKeys.list(cliKey) });
             queryClient.invalidateQueries({ queryKey: gatewayKeys.circuitStatus(cliKey) });

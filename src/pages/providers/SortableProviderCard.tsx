@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { FlaskConical, Pencil, RefreshCw, Terminal, Trash2 } from "lucide-react";
+import { Copy, FlaskConical, Pencil, RefreshCw, Terminal, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { logToConsole } from "../../services/consoleLog";
 import type { GatewayProviderCircuitStatus } from "../../services/gateway";
@@ -29,6 +29,8 @@ export type SortableProviderCardProps = {
   onCopyTerminalLaunchCommand?: (provider: ProviderSummary) => void;
   terminalLaunchCopying?: boolean;
   onValidateModel?: (provider: ProviderSummary) => void;
+  onDuplicate?: (provider: ProviderSummary) => void;
+  duplicateLoading?: boolean;
   onEdit: (provider: ProviderSummary) => void;
   onDelete: (provider: ProviderSummary) => void;
 };
@@ -42,6 +44,8 @@ export function SortableProviderCard({
   onCopyTerminalLaunchCommand,
   terminalLaunchCopying = false,
   onValidateModel,
+  onDuplicate,
+  duplicateLoading = false,
   onEdit,
   onDelete,
 }: SortableProviderCardProps) {
@@ -328,6 +332,19 @@ export function SortableProviderCard({
             >
               <FlaskConical className="h-4 w-4" />
               模型验证
+            </Button>
+          ) : null}
+
+          {onDuplicate ? (
+            <Button
+              onClick={() => onDuplicate(provider)}
+              variant="secondary"
+              size="sm"
+              disabled={duplicateLoading}
+              title="复制"
+            >
+              <Copy className="h-4 w-4" />
+              {duplicateLoading ? "复制中…" : "复制"}
             </Button>
           ) : null}
 
