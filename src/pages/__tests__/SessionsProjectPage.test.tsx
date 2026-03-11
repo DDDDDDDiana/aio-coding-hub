@@ -68,6 +68,7 @@ describe("pages/SessionsProjectPage", () => {
         session_count: 2,
         last_modified: 1740000000,
         model_provider: null,
+        wsl_distro: null,
       },
     ]);
     vi.mocked(cliSessionsSessionsList).mockResolvedValue([
@@ -85,6 +86,7 @@ describe("pages/SessionsProjectPage", () => {
         cwd: "/path",
         model_provider: "anthropic",
         cli_version: "1.0",
+        wsl_distro: null,
       },
     ]);
     renderWithRoute("/sessions/claude/proj1");
@@ -109,6 +111,7 @@ describe("pages/SessionsProjectPage", () => {
         cwd: null,
         model_provider: null,
         cli_version: null,
+        wsl_distro: null,
       },
       {
         source: "claude",
@@ -124,6 +127,7 @@ describe("pages/SessionsProjectPage", () => {
         cwd: null,
         model_provider: null,
         cli_version: null,
+        wsl_distro: null,
       },
     ]);
     renderWithRoute("/sessions/claude/proj1");

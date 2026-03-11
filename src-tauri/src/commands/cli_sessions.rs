@@ -7,10 +7,11 @@ use crate::{blocking, cli_sessions};
 pub(crate) async fn cli_sessions_projects_list(
     app: tauri::AppHandle,
     source: String,
+    wsl_distro: Option<String>,
 ) -> Result<Vec<cli_sessions::CliSessionsProjectSummary>, String> {
     let source = source.parse::<cli_sessions::CliSessionsSource>()?;
     blocking::run("cli_sessions_projects_list", move || {
-        cli_sessions::projects_list(&app, source)
+        cli_sessions::projects_list(&app, source, wsl_distro.as_deref())
     })
     .await
     .map_err(Into::into)
@@ -21,6 +22,7 @@ pub(crate) async fn cli_sessions_sessions_list(
     app: tauri::AppHandle,
     source: String,
     project_id: String,
+    wsl_distro: Option<String>,
 ) -> Result<Vec<cli_sessions::CliSessionsSessionSummary>, String> {
     let source = source.parse::<cli_sessions::CliSessionsSource>()?;
     let project_id = project_id.trim().to_string();
@@ -29,7 +31,7 @@ pub(crate) async fn cli_sessions_sessions_list(
     }
 
     blocking::run("cli_sessions_sessions_list", move || {
-        cli_sessions::sessions_list(&app, source, &project_id)
+        cli_sessions::sessions_list(&app, source, &project_id, wsl_distro.as_deref())
     })
     .await
     .map_err(Into::into)
@@ -43,6 +45,7 @@ pub(crate) async fn cli_sessions_messages_get(
     page: u32,
     page_size: u32,
     from_end: Option<bool>,
+    wsl_distro: Option<String>,
 ) -> Result<cli_sessions::CliSessionsPaginatedMessages, String> {
     let source = source.parse::<cli_sessions::CliSessionsSource>()?;
     let file_path = file_path.trim().to_string();
@@ -55,7 +58,15 @@ pub(crate) async fn cli_sessions_messages_get(
     let page_size = page_size as usize;
 
     blocking::run("cli_sessions_messages_get", move || {
-        cli_sessions::messages_get(&app, source, &file_path, page, page_size, from_end)
+        cli_sessions::messages_get(
+            &app,
+            source,
+            &file_path,
+            page,
+            page_size,
+            from_end,
+            wsl_distro.as_deref(),
+        )
     })
     .await
     .map_err(Into::into)

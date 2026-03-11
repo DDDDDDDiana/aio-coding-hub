@@ -503,6 +503,7 @@ pub fn projects_list(app: &tauri::AppHandle) -> AppResult<Vec<CliSessionsProject
                 session_count: 0,
                 last_modified: None,
                 model_provider: meta.as_ref().and_then(|m| m.model_provider.clone()),
+                wsl_distro: None,
             });
 
         entry.session_count += 1;
@@ -583,6 +584,7 @@ pub fn sessions_list(
             cwd: Some(cwd.to_string()),
             model_provider: meta.as_ref().and_then(|m| m.model_provider.clone()),
             cli_version: meta.as_ref().and_then(|m| m.cli_version.clone()),
+            wsl_distro: None,
         });
     }
 
@@ -598,6 +600,231 @@ pub fn messages_get(
     from_end: bool,
 ) -> AppResult<CliSessionsPaginatedMessages> {
     let resolved = resolve_and_validate_session_file_path(app, file_path)?;
+    let messages = parse_all_messages(&resolved).map_err(AppError::from)?;
+
+    let total = messages.len();
+    let (start, end, has_more) = if from_end {
+        let end = total.saturating_sub(page * page_size);
+        let start = end.saturating_sub(page_size);
+        let has_more = start > 0;
+        (start, end, has_more)
+    } else {
+        let start = page * page_size;
+        let end = (start + page_size).min(total);
+        let has_more = end < total;
+        (start, end, has_more)
+    };
+
+    let page_messages = if start < end && end <= total {
+        messages[start..end].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    Ok(CliSessionsPaginatedMessages {
+        messages: page_messages,
+        total,
+        page,
+        page_size,
+        has_more,
+    })
+}
+
+// ── WSL support ─────────────────────────────────────────────────────────────
+
+fn wsl_codex_sessions_dir(distro: &str) -> AppResult<PathBuf> {
+    let home = crate::wsl::resolve_wsl_home_unc(distro)?;
+    Ok(home.join(".codex").join("sessions"))
+}
+
+fn wsl_scan_all_session_files(distro: &str) -> AppResult<Vec<PathBuf>> {
+    let sessions_dir = wsl_codex_sessions_dir(distro)?;
+    if !sessions_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    let year_dirs = match fs::read_dir(&sessions_dir) {
+        Ok(rd) => rd,
+        Err(_) => return Ok(files),
+    };
+
+    for year in year_dirs.flatten() {
+        let year_path = year.path();
+        if !year_path.is_dir() {
+            continue;
+        }
+        let month_dirs = match fs::read_dir(&year_path) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for month in month_dirs.flatten() {
+            let month_path = month.path();
+            if !month_path.is_dir() {
+                continue;
+            }
+            let day_dirs = match fs::read_dir(&month_path) {
+                Ok(rd) => rd,
+                Err(_) => continue,
+            };
+            for day in day_dirs.flatten() {
+                let day_path = day.path();
+                if !day_path.is_dir() {
+                    continue;
+                }
+                let jsonl_files = match fs::read_dir(&day_path) {
+                    Ok(rd) => rd,
+                    Err(_) => continue,
+                };
+                for file in jsonl_files.flatten() {
+                    let path = file.path();
+                    if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(files)
+}
+
+pub fn wsl_projects_list(distro: &str) -> AppResult<Vec<CliSessionsProjectSummary>> {
+    let files = wsl_scan_all_session_files(distro)?;
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut map: HashMap<String, CliSessionsProjectSummary> = HashMap::new();
+    let distro_opt = Some(distro.to_string());
+
+    for file_path in files {
+        let meta = extract_session_meta(&file_path);
+        let cwd = meta
+            .as_ref()
+            .and_then(|m| m.cwd.clone())
+            .unwrap_or_default();
+        if cwd.trim().is_empty() {
+            continue;
+        }
+
+        let (_, modified) = file_times(&file_path);
+        let entry = map
+            .entry(cwd.clone())
+            .or_insert_with(|| CliSessionsProjectSummary {
+                source: "codex".to_string(),
+                id: cwd.clone(),
+                display_path: cwd.clone(),
+                short_name: short_name_from_path(&cwd),
+                session_count: 0,
+                last_modified: None,
+                model_provider: meta.as_ref().and_then(|m| m.model_provider.clone()),
+                wsl_distro: distro_opt.clone(),
+            });
+
+        entry.session_count += 1;
+        if let Some(m) = modified {
+            if entry.last_modified.map(|v| m > v).unwrap_or(true) {
+                entry.last_modified = Some(m);
+            }
+        }
+        if entry.model_provider.is_none() {
+            entry.model_provider = meta.as_ref().and_then(|m| m.model_provider.clone());
+        }
+    }
+
+    let mut out: Vec<CliSessionsProjectSummary> = map.into_values().collect();
+    out.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    Ok(out)
+}
+
+pub fn wsl_sessions_list(
+    distro: &str,
+    project_id: &str,
+) -> AppResult<Vec<CliSessionsSessionSummary>> {
+    let cwd = project_id.trim();
+    if cwd.is_empty() {
+        return Err(AppError::new("SEC_INVALID_INPUT", "projectId is required"));
+    }
+
+    let files = wsl_scan_all_session_files(distro)?;
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let sessions_dir = wsl_codex_sessions_dir(distro)?;
+    let distro_opt = Some(distro.to_string());
+    let mut out: Vec<CliSessionsSessionSummary> = Vec::new();
+
+    for file_path in files {
+        if validate_path_under_root(&file_path, &sessions_dir).is_err() {
+            continue;
+        }
+        let meta = extract_session_meta(&file_path);
+        let matches = meta
+            .as_ref()
+            .and_then(|m| m.cwd.as_deref())
+            .map(|v| v == cwd)
+            .unwrap_or(false);
+        if !matches {
+            continue;
+        }
+
+        let session_id = meta
+            .as_ref()
+            .map(|m| m.id.clone())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| {
+                file_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
+
+        let (created_at, modified_at) = file_times(&file_path);
+        let first_prompt = extract_first_prompt(&file_path);
+        let message_count = count_messages(&file_path);
+
+        out.push(CliSessionsSessionSummary {
+            source: "codex".to_string(),
+            session_id,
+            file_path: file_path.to_string_lossy().to_string(),
+            first_prompt,
+            message_count,
+            created_at,
+            modified_at,
+            git_branch: meta.as_ref().and_then(|m| m.git_branch.clone()),
+            project_path: Some(cwd.to_string()),
+            is_sidechain: None,
+            cwd: Some(cwd.to_string()),
+            model_provider: meta.as_ref().and_then(|m| m.model_provider.clone()),
+            cli_version: meta.as_ref().and_then(|m| m.cli_version.clone()),
+            wsl_distro: distro_opt.clone(),
+        });
+    }
+
+    out.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    Ok(out)
+}
+
+pub fn wsl_messages_get(
+    distro: &str,
+    file_path: &str,
+    page: usize,
+    page_size: usize,
+    from_end: bool,
+) -> AppResult<CliSessionsPaginatedMessages> {
+    let root = wsl_codex_sessions_dir(distro)?;
+    let raw = PathBuf::from(file_path);
+    if raw.extension().map(|e| e != "jsonl").unwrap_or(true) {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            "filePath must be a .jsonl file",
+        ));
+    }
+
+    let resolved = super::validate_path_under_root(&raw, &root)?;
     let messages = parse_all_messages(&resolved).map_err(AppError::from)?;
 
     let total = messages.len();

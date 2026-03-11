@@ -50,7 +50,7 @@ describe("services/cliSessions", () => {
       expect(invokeService).toHaveBeenCalledWith(
         "读取会话项目列表失败",
         "cli_sessions_projects_list",
-        { source: "claude" }
+        { source: "claude", wslDistro: null }
       );
     });
   });
@@ -61,6 +61,7 @@ describe("services/cliSessions", () => {
       expect(invokeService).toHaveBeenCalledWith("读取会话列表失败", "cli_sessions_sessions_list", {
         source: "codex",
         projectId: "proj-1",
+        wslDistro: null,
       });
     });
   });
@@ -80,6 +81,7 @@ describe("services/cliSessions", () => {
         page: 0,
         pageSize: 50,
         fromEnd: true,
+        wslDistro: null,
       });
     });
   });

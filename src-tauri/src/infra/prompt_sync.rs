@@ -273,7 +273,7 @@ fn backup_for_enable(
     })
 }
 
-fn prompt_content_to_bytes(content: &str) -> Vec<u8> {
+pub(crate) fn prompt_content_to_bytes(content: &str) -> Vec<u8> {
     let trimmed = content.trim_matches('\u{feff}').trim_end();
     let mut out = trimmed.as_bytes().to_vec();
     if !out.ends_with(b"\n") {

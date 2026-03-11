@@ -19,4 +19,5 @@ pub(crate) use types::McpServerForSync;
 
 pub use fs::{read_target_bytes, restore_target_bytes};
 pub use manifest::{read_manifest_bytes, restore_manifest_bytes};
+pub(crate) use sync::build_next_bytes;
 pub use sync::sync_cli;

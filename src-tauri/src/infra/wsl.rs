@@ -1,7 +1,12 @@
 //! Usage: Windows WSL detection and per-distro client configuration helpers.
 
+use crate::mcp_sync::McpServerForSync;
+use crate::prompt_sync;
 use crate::settings;
+use crate::shared::error::{AppError, AppResult};
+use rusqlite::OptionalExtension;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Serialize)]
@@ -16,6 +21,12 @@ pub struct WslDistroConfigStatus {
     pub claude: bool,
     pub codex: bool,
     pub gemini: bool,
+    pub claude_mcp: bool,
+    pub codex_mcp: bool,
+    pub gemini_mcp: bool,
+    pub claude_prompt: bool,
+    pub codex_prompt: bool,
+    pub gemini_prompt: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,6 +84,65 @@ fn bash_single_quote(value: &str) -> String {
         return "''".to_string();
     }
     format!("'{}'", value.replace('\'', r#"'"'"'"#))
+}
+
+/// Resolve the user HOME directory inside a WSL distro, returned as a Windows UNC path.
+///
+/// Example: distro `"Ubuntu"` → `\\wsl$\Ubuntu\home\diao`
+pub fn resolve_wsl_home_unc(distro: &str) -> AppResult<PathBuf> {
+    if !cfg!(windows) {
+        return Err(AppError::new(
+            "WSL_ERROR",
+            "WSL is only available on Windows",
+        ));
+    }
+
+    let output = hide_window_cmd("wsl")
+        .args([
+            "-d",
+            distro,
+            "--",
+            "bash",
+            "-lc",
+            r#"getent passwd "$(whoami)" | cut -d: -f6"#,
+        ])
+        .output()
+        .map_err(|e| AppError::new("WSL_ERROR", format!("failed to run wsl.exe: {e}")))?;
+
+    if !output.status.success() {
+        return Err(AppError::new(
+            "WSL_ERROR",
+            format!("wsl command failed for distro: {distro}"),
+        ));
+    }
+
+    let home = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if home.is_empty() || !home.starts_with('/') {
+        return Err(AppError::new(
+            "WSL_ERROR",
+            format!("invalid HOME for distro {distro}: {home}"),
+        ));
+    }
+
+    // Build UNC path: \\wsl$\<distro><home_path_with_backslashes>
+    let unc = format!(r"\\wsl$\{}{}", distro, home.replace('/', "\\"));
+    Ok(PathBuf::from(unc))
+}
+
+/// Validate that a distro name is in the detected WSL distros list.
+pub fn validate_distro(distro: &str) -> AppResult<()> {
+    let trimmed = distro.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::new("SEC_INVALID_INPUT", "distro is required"));
+    }
+    let detection = detect();
+    if !detection.distros.iter().any(|d| d == trimmed) {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            format!("unknown WSL distro: {trimmed}"),
+        ));
+    }
+    Ok(())
 }
 
 pub fn detect() -> WslDetection {
@@ -249,6 +319,452 @@ fn run_wsl_bash_script(distro: &str, script: &str) -> crate::shared::error::AppR
         }
     )
     .into())
+}
+
+/// Execute a bash script inside a WSL distro and capture its stdout.
+fn run_wsl_bash_script_capture(
+    distro: &str,
+    script: &str,
+) -> crate::shared::error::AppResult<String> {
+    let mut cmd = hide_window_cmd("wsl");
+    cmd.args(["-d", distro, "bash"]);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn wsl: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(script.as_bytes())
+            .map_err(|e| format!("failed to write wsl stdin: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to wait for wsl: {e}"))?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr_raw = &output.stderr;
+    let stderr = {
+        let utf8 = String::from_utf8_lossy(stderr_raw).trim().to_string();
+        if utf8.contains('\0') {
+            let decoded = decode_utf16_le(stderr_raw);
+            let trimmed = decoded.trim().to_string();
+            if trimmed.is_empty() {
+                utf8
+            } else {
+                trimmed
+            }
+        } else {
+            utf8
+        }
+    };
+    let msg = if !stderr.is_empty() { stderr } else { stdout };
+    Err(format!(
+        "WSL_ERROR: {}",
+        if msg.is_empty() {
+            "unknown error"
+        } else {
+            &msg
+        }
+    )
+    .into())
+}
+
+/// Read a file from WSL using base64 encoding. Returns None if file does not exist.
+fn read_wsl_file(distro: &str, path_expr: &str) -> AppResult<Option<Vec<u8>>> {
+    use base64::Engine;
+
+    let path_escaped = bash_single_quote(path_expr);
+    let script = format!(
+        r#"
+set -euo pipefail
+target={path_escaped}
+if [ ! -f "$target" ]; then
+  echo "AIO_WSL_FILE_NOT_FOUND"
+  exit 0
+fi
+base64 -w0 "$target"
+echo ""
+"#
+    );
+    let stdout = run_wsl_bash_script_capture(distro, &script)?;
+    let trimmed = stdout.trim();
+    if trimmed == "AIO_WSL_FILE_NOT_FOUND" {
+        return Ok(None);
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(trimmed)
+        .map_err(|e| format!("WSL_ERROR: base64 decode failed: {e}"))?;
+    Ok(Some(bytes))
+}
+
+/// Atomically write a file into WSL (backup + tmp + mv).
+fn write_wsl_file(distro: &str, path_expr: &str, content: &[u8]) -> AppResult<()> {
+    use base64::Engine;
+
+    let b64 = base64::engine::general_purpose::STANDARD.encode(content);
+    let path_escaped = bash_single_quote(path_expr);
+    let b64_escaped = bash_single_quote(&b64);
+
+    let script = format!(
+        r#"
+set -euo pipefail
+HOME="$(getent passwd "$(whoami)" | cut -d: -f6)"
+export HOME
+
+target={path_escaped}
+dir="$(dirname "$target")"
+mkdir -p "$dir"
+
+ts="$(date +%s)"
+if [ -f "$target" ]; then
+  cp -a "$target" "$target.bak.$ts"
+fi
+
+tmp_path="$(mktemp "${{target}}.tmp.XXXXXX")"
+cleanup() {{ rm -f "$tmp_path"; }}
+trap cleanup EXIT
+
+echo {b64_escaped} | base64 -d > "$tmp_path"
+
+if [ -f "$target" ]; then
+  chmod --reference="$target" "$tmp_path" 2>/dev/null || true
+fi
+
+mv -f "$tmp_path" "$target"
+trap - EXIT
+"#
+    );
+    run_wsl_bash_script(distro, &script)
+}
+
+// ── MCP/Prompt WSL sync data structures ──
+
+/// MCP sync data for all CLIs, used when syncing to WSL.
+pub struct WslMcpSyncData {
+    pub claude: (Vec<McpServerForSync>, Vec<String>),
+    pub codex: (Vec<McpServerForSync>, Vec<String>),
+    pub gemini: (Vec<McpServerForSync>, Vec<String>),
+}
+
+/// Prompt sync data for all CLIs, used when syncing to WSL.
+pub struct WslPromptSyncData {
+    pub claude_content: Option<String>,
+    pub codex_content: Option<String>,
+    pub gemini_content: Option<String>,
+}
+
+// ── WSL MCP manifest ──
+
+/// Tracks which MCP server keys were synced to a WSL distro for a specific CLI,
+/// so we can properly remove them on the next sync.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct WslMcpManifest {
+    distro: String,
+    cli_key: String,
+    managed_keys: Vec<String>,
+    updated_at: i64,
+}
+
+fn wsl_mcp_manifest_path(
+    app: &tauri::AppHandle,
+    distro: &str,
+    cli_key: &str,
+) -> AppResult<std::path::PathBuf> {
+    let dir = crate::app_paths::app_data_dir(app)?
+        .join("wsl-mcp-sync")
+        .join(distro)
+        .join(cli_key);
+    Ok(dir.join("manifest.json"))
+}
+
+fn read_wsl_mcp_manifest(app: &tauri::AppHandle, distro: &str, cli_key: &str) -> Vec<String> {
+    let path = match wsl_mcp_manifest_path(app, distro, cli_key) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => return Vec::new(),
+    };
+    match serde_json::from_slice::<WslMcpManifest>(&bytes) {
+        Ok(m) => m.managed_keys,
+        Err(_) => Vec::new(),
+    }
+}
+
+fn write_wsl_mcp_manifest(
+    app: &tauri::AppHandle,
+    distro: &str,
+    cli_key: &str,
+    managed_keys: &[String],
+) -> AppResult<()> {
+    let path = wsl_mcp_manifest_path(app, distro, cli_key)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create wsl-mcp-sync dir: {e}"))?;
+    }
+    let manifest = WslMcpManifest {
+        distro: distro.to_string(),
+        cli_key: cli_key.to_string(),
+        managed_keys: managed_keys.to_vec(),
+        updated_at: crate::shared::time::now_unix_seconds(),
+    };
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("failed to serialize wsl mcp manifest: {e}"))?;
+    std::fs::write(&path, json.as_bytes())
+        .map_err(|e| format!("failed to write wsl mcp manifest: {e}"))?;
+    Ok(())
+}
+
+// ── Path adaptation for WSL ──
+
+/// Strip Windows executable extensions (.cmd, .bat, .exe) from a command name.
+fn strip_win_exe_ext(cmd: &str) -> &str {
+    for ext in &[".cmd", ".bat", ".exe", ".CMD", ".BAT", ".EXE"] {
+        if let Some(stripped) = cmd.strip_suffix(ext) {
+            return stripped;
+        }
+    }
+    cmd
+}
+
+/// Check if a path looks like a Windows absolute path (e.g., `C:\...`).
+fn is_windows_absolute_path(p: &str) -> bool {
+    let bytes = p.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && (bytes[1] == b':')
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+/// Adapt MCP servers for WSL: convert Windows paths, strip .cmd/.bat extensions.
+/// Returns (adapted_servers, bash_preamble_lines) — the bash preamble contains
+/// `wslpath` variable assignments that must run before the config is written.
+pub fn adapt_mcp_servers_for_wsl(servers: &[McpServerForSync]) -> Vec<McpServerForSync> {
+    servers
+        .iter()
+        .map(|s| {
+            let mut adapted = McpServerForSync {
+                server_key: s.server_key.clone(),
+                transport: s.transport.clone(),
+                command: s.command.clone(),
+                args: s.args.clone(),
+                env: s.env.clone(),
+                cwd: s.cwd.clone(),
+                url: s.url.clone(),
+                headers: s.headers.clone(),
+            };
+
+            // Adapt command
+            if let Some(ref cmd) = adapted.command {
+                let stripped = strip_win_exe_ext(cmd);
+                if is_windows_absolute_path(stripped) {
+                    // Cannot resolve at build time; skip this server's command conversion.
+                    // WSL users will likely have the tool installed natively.
+                    // Just use the basename without extension.
+                    let basename = stripped.rsplit(['\\', '/']).next().unwrap_or(stripped);
+                    adapted.command = Some(basename.to_string());
+                } else {
+                    adapted.command = Some(stripped.to_string());
+                }
+            }
+
+            // Adapt cwd
+            if let Some(ref cwd) = adapted.cwd {
+                if is_windows_absolute_path(cwd) {
+                    // Convert backslashes to forward slashes for wslpath compatibility.
+                    // Use /mnt/<drive>/... heuristic since we can't call wslpath at build time.
+                    let converted = win_path_to_wsl_mount(cwd);
+                    adapted.cwd = Some(converted);
+                }
+            }
+
+            adapted
+        })
+        .collect()
+}
+
+/// Best-effort Windows path to WSL /mnt/ path conversion.
+/// E.g., `C:\Users\foo\bar` → `/mnt/c/Users/foo/bar`
+fn win_path_to_wsl_mount(win_path: &str) -> String {
+    let bytes = win_path.as_bytes();
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        let rest = &win_path[2..].replace('\\', "/");
+        format!("/mnt/{drive}{rest}")
+    } else {
+        win_path.replace('\\', "/")
+    }
+}
+
+// ── WSL MCP sync ──
+
+/// Sync MCP configuration for a single CLI to a WSL distro.
+/// Uses the existing `build_next_bytes` to merge servers into the config.
+fn sync_wsl_mcp_for_cli(
+    distro: &str,
+    cli_key: &str,
+    servers: &[McpServerForSync],
+    managed_keys: &[String],
+) -> AppResult<Vec<String>> {
+    if !matches!(cli_key, "claude" | "codex" | "gemini") {
+        return Err(format!("unknown cli_key: {cli_key}").into());
+    }
+
+    // Resolve the config file path inside WSL (handles CODEX_HOME, etc.)
+    let resolve_script = format!(
+        r#"
+set -euo pipefail
+HOME="$(getent passwd "$(whoami)" | cut -d: -f6)"
+export HOME
+codex_home_raw="${{CODEX_HOME:-$HOME/.codex}}"
+p="$codex_home_raw"
+if [ "$codex_home_raw" = "~" ]; then p="$HOME"
+elif [ "${{codex_home_raw#~/}}" != "$codex_home_raw" ]; then p="$HOME/${{codex_home_raw#~/}}"
+elif [ "${{codex_home_raw#/}}" = "$codex_home_raw" ]; then p="$HOME/$codex_home_raw"
+fi
+case {cli_key} in
+  claude) echo "$HOME/.claude.json" ;;
+  codex) echo "$p/config.toml" ;;
+  gemini) echo "$HOME/.gemini/settings.json" ;;
+esac
+"#,
+        cli_key = bash_single_quote(cli_key)
+    );
+
+    let resolved_path = run_wsl_bash_script_capture(distro, &resolve_script)?;
+    let resolved_path = resolved_path.trim();
+
+    // Read current config from WSL
+    let current = read_wsl_file(distro, resolved_path)?;
+
+    // Build merged config using existing infrastructure
+    let next_bytes = crate::mcp_sync::build_next_bytes(cli_key, current, managed_keys, servers)
+        .map_err(|e| format!("WSL MCP build failed for {cli_key}: {e}"))?;
+
+    // Write back to WSL
+    write_wsl_file(distro, resolved_path, &next_bytes)?;
+
+    // Return list of keys we now manage
+    let mut keys: Vec<String> = servers.iter().map(|s| s.server_key.clone()).collect();
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
+// ── WSL Prompt sync ──
+
+/// Resolve the prompt target file path inside a WSL distro.
+/// Returns an absolute path like `/home/user/.claude/CLAUDE.md`.
+fn resolve_wsl_prompt_path(distro: &str, cli_key: &str) -> AppResult<String> {
+    let resolve_script = format!(
+        r#"
+set -euo pipefail
+HOME="$(getent passwd "$(whoami)" | cut -d: -f6)"
+export HOME
+codex_home_raw="${{CODEX_HOME:-$HOME/.codex}}"
+p="$codex_home_raw"
+if [ "$codex_home_raw" = "~" ]; then p="$HOME"
+elif [ "${{codex_home_raw#~/}}" != "$codex_home_raw" ]; then p="$HOME/${{codex_home_raw#~/}}"
+elif [ "${{codex_home_raw#/}}" = "$codex_home_raw" ]; then p="$HOME/$codex_home_raw"
+fi
+case {cli_key} in
+  claude) echo "$HOME/.claude/CLAUDE.md" ;;
+  codex) echo "$p/AGENTS.md" ;;
+  gemini) echo "$HOME/.gemini/GEMINI.md" ;;
+esac
+"#,
+        cli_key = bash_single_quote(cli_key)
+    );
+    let resolved = run_wsl_bash_script_capture(distro, &resolve_script)?;
+    let resolved = resolved.trim().to_string();
+    if resolved.is_empty() || !resolved.starts_with('/') {
+        return Err(format!("failed to resolve prompt path for {cli_key}: {resolved}").into());
+    }
+    Ok(resolved)
+}
+
+/// Sync a prompt file for a single CLI to a WSL distro.
+fn sync_wsl_prompt_for_cli(distro: &str, cli_key: &str, content: Option<&str>) -> AppResult<()> {
+    let Some(content) = content else {
+        return Ok(());
+    };
+
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+
+    if !matches!(cli_key, "claude" | "codex" | "gemini") {
+        return Err(format!("unknown cli_key: {cli_key}").into());
+    }
+
+    // Resolve to an absolute path inside WSL (e.g. /home/user/.codex/AGENTS.md)
+    // Must NOT pass $HOME as a literal string — bash_single_quote would prevent expansion.
+    let target_path = resolve_wsl_prompt_path(distro, cli_key)?;
+
+    let bytes = prompt_sync::prompt_content_to_bytes(content);
+    write_wsl_file(distro, &target_path, &bytes)
+}
+
+// ── Data gathering ──
+
+/// Gather MCP sync data from the database for all CLIs.
+pub fn gather_mcp_sync_data(
+    conn: &rusqlite::Connection,
+    app: &tauri::AppHandle,
+    distro: &str,
+) -> AppResult<WslMcpSyncData> {
+    let gather_for_cli = |cli_key: &str| -> AppResult<(Vec<McpServerForSync>, Vec<String>)> {
+        let servers = crate::mcp::list_enabled_for_cli(conn, cli_key)?;
+        let adapted = adapt_mcp_servers_for_wsl(&servers);
+        let prev_keys = read_wsl_mcp_manifest(app, distro, cli_key);
+        Ok((adapted, prev_keys))
+    };
+
+    Ok(WslMcpSyncData {
+        claude: gather_for_cli("claude")?,
+        codex: gather_for_cli("codex")?,
+        gemini: gather_for_cli("gemini")?,
+    })
+}
+
+/// Gather prompt sync data from the database for all CLIs.
+pub fn gather_prompt_sync_data(conn: &rusqlite::Connection) -> AppResult<WslPromptSyncData> {
+    let get_for_cli = |cli_key: &str| -> AppResult<Option<String>> {
+        let Some(workspace_id) = crate::workspaces::active_id_by_cli(conn, cli_key)? else {
+            return Ok(None);
+        };
+        let content: Option<String> = conn
+            .query_row(
+                r#"
+SELECT content
+FROM prompts
+WHERE workspace_id = ?1 AND enabled = 1
+ORDER BY updated_at DESC, id DESC
+LIMIT 1
+"#,
+                rusqlite::params![workspace_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("DB_ERROR: failed to query enabled prompt for {cli_key}: {e}"))?;
+        Ok(content)
+    };
+
+    Ok(WslPromptSyncData {
+        claude_content: get_for_cli("claude")?,
+        codex_content: get_for_cli("codex")?,
+        gemini_content: get_for_cli("gemini")?,
+    })
 }
 
 fn configure_wsl_claude(distro: &str, proxy_origin: &str) -> crate::shared::error::AppResult<()> {
@@ -878,6 +1394,12 @@ export HOME
 claude=0
 codex=0
 gemini=0
+claude_mcp=0
+codex_mcp=0
+gemini_mcp=0
+claude_prompt=0
+codex_prompt=0
+gemini_prompt=0
 
 [ -f "$HOME/.claude/settings.json" ] && claude=1
 
@@ -896,78 +1418,139 @@ fi
 [ -f "$p/config.toml" ] && codex=1
 [ -f "$HOME/.gemini/.env" ] && gemini=1
 
-printf 'AIO_WSL_STATUS=%s%s%s\n' "$claude" "$codex" "$gemini"
+# Check MCP: claude uses .claude.json mcpServers, codex uses config.toml mcp_servers, gemini uses settings.json mcpServers
+if [ -f "$HOME/.claude.json" ] && command -v grep >/dev/null 2>&1; then
+  grep -q '"mcpServers"' "$HOME/.claude.json" 2>/dev/null && claude_mcp=1
+fi
+if [ -f "$p/config.toml" ] && command -v grep >/dev/null 2>&1; then
+  grep -q '\[mcp_servers\.' "$p/config.toml" 2>/dev/null && codex_mcp=1
+fi
+if [ -f "$HOME/.gemini/settings.json" ] && command -v grep >/dev/null 2>&1; then
+  grep -q '"mcpServers"' "$HOME/.gemini/settings.json" 2>/dev/null && gemini_mcp=1
+fi
+
+# Check Prompt files
+[ -f "$HOME/.claude/CLAUDE.md" ] && claude_prompt=1
+[ -f "$p/AGENTS.md" ] && codex_prompt=1
+[ -f "$HOME/.gemini/GEMINI.md" ] && gemini_prompt=1
+
+printf 'AIO_WSL_STATUS=%s%s%s%s%s%s%s%s%s\n' "$claude" "$codex" "$gemini" "$claude_mcp" "$codex_mcp" "$gemini_mcp" "$claude_prompt" "$codex_prompt" "$gemini_prompt"
 "#;
 
-    fn parse_status_triplet(text: &str) -> Option<(bool, bool, bool)> {
+    #[derive(Default)]
+    struct StatusBits {
+        claude: bool,
+        codex: bool,
+        gemini: bool,
+        claude_mcp: bool,
+        codex_mcp: bool,
+        gemini_mcp: bool,
+        claude_prompt: bool,
+        codex_prompt: bool,
+        gemini_prompt: bool,
+    }
+
+    fn parse_status_bits(text: &str) -> Option<StatusBits> {
         let slice = match text.split_once("AIO_WSL_STATUS=") {
             Some((_, tail)) => tail,
             None => text,
         };
         let mut bits = slice.chars().filter(|c| *c == '0' || *c == '1');
-        let claude = bits.next()?;
-        let codex = bits.next()?;
-        let gemini = bits.next()?;
-        Some((claude == '1', codex == '1', gemini == '1'))
+        Some(StatusBits {
+            claude: bits.next()? == '1',
+            codex: bits.next()? == '1',
+            gemini: bits.next()? == '1',
+            claude_mcp: bits.next()? == '1',
+            codex_mcp: bits.next()? == '1',
+            gemini_mcp: bits.next()? == '1',
+            claude_prompt: bits.next()? == '1',
+            codex_prompt: bits.next()? == '1',
+            gemini_prompt: bits.next()? == '1',
+        })
     }
 
     let mut out = Vec::new();
     for distro in distros {
-        let (claude, codex, gemini) = match hide_window_cmd("wsl")
-            .args(["-d", distro, "bash", "-c", STATUS_SCRIPT])
-            .output()
-        {
-            Ok(output) => {
-                if !output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    let stderr = {
-                        let utf8 = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                        if utf8.contains('\0') {
-                            let decoded = decode_utf16_le(&output.stderr);
-                            let trimmed = decoded.trim().to_string();
-                            if trimmed.is_empty() {
-                                utf8
-                            } else {
-                                trimmed
-                            }
-                        } else {
+        let bits: StatusBits = (|| -> Option<StatusBits> {
+            let mut cmd = hide_window_cmd("wsl");
+            cmd.args(["-d", distro, "bash"]);
+            cmd.stdin(Stdio::piped());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(err) => {
+                    tracing::warn!(distro = distro, error = %err, "WSL config status spawn failed");
+                    return None;
+                }
+            };
+
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = stdin.write_all(STATUS_SCRIPT.as_bytes());
+            }
+
+            let output = match child.wait_with_output() {
+                Ok(o) => o,
+                Err(err) => {
+                    tracing::warn!(distro = distro, error = %err, "WSL config status wait failed");
+                    return None;
+                }
+            };
+
+            if !output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = {
+                    let utf8 = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    if utf8.contains('\0') {
+                        let decoded = decode_utf16_le(&output.stderr);
+                        let trimmed = decoded.trim().to_string();
+                        if trimmed.is_empty() {
                             utf8
+                        } else {
+                            trimmed
                         }
-                    };
+                    } else {
+                        utf8
+                    }
+                };
+                tracing::warn!(
+                    distro = distro,
+                    code = ?output.status.code(),
+                    stdout = stdout,
+                    stderr = stderr,
+                    "WSL config status script failed"
+                );
+                return None;
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            match parse_status_bits(&stdout) {
+                Some(v) => Some(v),
+                None => {
                     tracing::warn!(
                         distro = distro,
-                        code = ?output.status.code(),
-                        stdout = stdout,
-                        stderr = stderr,
-                        "WSL config status script failed"
+                        stdout = stdout.trim().to_string(),
+                        "WSL config status output parse failed"
                     );
-                    (false, false, false)
-                } else {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    match parse_status_triplet(&stdout) {
-                        Some(v) => v,
-                        None => {
-                            tracing::warn!(
-                                distro = distro,
-                                stdout = stdout.trim().to_string(),
-                                "WSL config status output parse failed"
-                            );
-                            (false, false, false)
-                        }
-                    }
+                    None
                 }
             }
-            Err(err) => {
-                tracing::warn!(distro = distro, error = %err, "WSL config status spawn failed");
-                (false, false, false)
-            }
-        };
+        })()
+        .unwrap_or_default();
 
         out.push(WslDistroConfigStatus {
             distro: distro.clone(),
-            claude,
-            codex,
-            gemini,
+            claude: bits.claude,
+            codex: bits.codex,
+            gemini: bits.gemini,
+            claude_mcp: bits.claude_mcp,
+            codex_mcp: bits.codex_mcp,
+            gemini_mcp: bits.gemini_mcp,
+            claude_prompt: bits.claude_prompt,
+            codex_prompt: bits.codex_prompt,
+            gemini_prompt: bits.gemini_prompt,
         });
     }
 
@@ -978,6 +1561,9 @@ pub fn configure_clients(
     distros: &[String],
     targets: &settings::WslTargetCli,
     proxy_origin: &str,
+    app: Option<&tauri::AppHandle>,
+    mcp_data: Option<&WslMcpSyncData>,
+    prompt_data: Option<&WslPromptSyncData>,
 ) -> WslConfigureReport {
     if !cfg!(windows) {
         return WslConfigureReport {
@@ -994,6 +1580,7 @@ pub fn configure_clients(
     for distro in distros {
         let mut results = Vec::new();
 
+        // ── Auth configuration ──
         if targets.claude {
             match configure_wsl_claude(distro, proxy_origin) {
                 Ok(()) => results.push(WslConfigureCliReport {
@@ -1036,6 +1623,74 @@ pub fn configure_clients(
                     ok: false,
                     message: err.to_string(),
                 }),
+            }
+        }
+
+        // ── MCP sync ──
+        if let Some(mcp) = mcp_data {
+            for (cli_key, (servers, managed_keys)) in [
+                ("claude", &mcp.claude),
+                ("codex", &mcp.codex),
+                ("gemini", &mcp.gemini),
+            ] {
+                if servers.is_empty() && managed_keys.is_empty() {
+                    continue;
+                }
+                match sync_wsl_mcp_for_cli(distro, cli_key, servers, managed_keys) {
+                    Ok(new_keys) => {
+                        if let Some(app) = app {
+                            if let Err(e) = write_wsl_mcp_manifest(app, distro, cli_key, &new_keys)
+                            {
+                                tracing::warn!(
+                                    distro = distro,
+                                    cli_key = cli_key,
+                                    "failed to write WSL MCP manifest: {e}"
+                                );
+                            }
+                        }
+                        results.push(WslConfigureCliReport {
+                            cli_key: format!("{cli_key}_mcp"),
+                            ok: true,
+                            message: format!("ok ({} servers)", new_keys.len()),
+                        });
+                    }
+                    Err(err) => {
+                        results.push(WslConfigureCliReport {
+                            cli_key: format!("{cli_key}_mcp"),
+                            ok: false,
+                            message: err.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // ── Prompt sync ──
+        if let Some(prompts) = prompt_data {
+            for (cli_key, content) in [
+                ("claude", prompts.claude_content.as_deref()),
+                ("codex", prompts.codex_content.as_deref()),
+                ("gemini", prompts.gemini_content.as_deref()),
+            ] {
+                if content.is_none() {
+                    continue;
+                }
+                match sync_wsl_prompt_for_cli(distro, cli_key, content) {
+                    Ok(()) => {
+                        results.push(WslConfigureCliReport {
+                            cli_key: format!("{cli_key}_prompt"),
+                            ok: true,
+                            message: "ok".to_string(),
+                        });
+                    }
+                    Err(err) => {
+                        results.push(WslConfigureCliReport {
+                            cli_key: format!("{cli_key}_prompt"),
+                            ok: false,
+                            message: err.to_string(),
+                        });
+                    }
+                }
             }
         }
 

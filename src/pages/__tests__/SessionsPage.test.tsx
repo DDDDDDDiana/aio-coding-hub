@@ -57,6 +57,7 @@ describe("pages/SessionsPage", () => {
         session_count: 5,
         last_modified: 1740000000,
         model_provider: "anthropic",
+        wsl_distro: null,
       },
     ]);
     renderWithProviders(<SessionsPage />, { route: "/?source=claude" });
@@ -74,6 +75,7 @@ describe("pages/SessionsPage", () => {
         session_count: 3,
         last_modified: 1740000000,
         model_provider: null,
+        wsl_distro: null,
       },
       {
         source: "claude",
@@ -83,6 +85,7 @@ describe("pages/SessionsPage", () => {
         session_count: 1,
         last_modified: 1740000000,
         model_provider: null,
+        wsl_distro: null,
       },
     ]);
     renderWithProviders(<SessionsPage />, { route: "/?source=claude" });

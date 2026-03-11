@@ -213,9 +213,9 @@ pub fn run() {
 
                 let _ = app_handle.emit("gateway:status", status.clone());
 
-                // WSL auto-detect and auto-configure (Windows only)
+                // WSL auto-detect and auto-configure (Windows only, gated by wsl_auto_config)
                 #[cfg(windows)]
-                {
+                if settings.wsl_auto_config {
                     let auto_cfg_app = app_handle.clone();
                     let auto_cfg_db = db.clone();
                     let auto_cfg_port = status.port;

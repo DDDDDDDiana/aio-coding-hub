@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use super::cli_specs::{validate_cli_key, MCP_CLI_KEYS};
 
-pub(super) fn list_enabled_for_cli(
+pub(crate) fn list_enabled_for_cli(
     conn: &Connection,
     cli_key: &str,
 ) -> crate::shared::error::AppResult<Vec<mcp_sync::McpServerForSync>> {

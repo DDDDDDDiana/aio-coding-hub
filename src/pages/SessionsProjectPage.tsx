@@ -1,7 +1,7 @@
 // Usage: Project sessions list. Backend command: `cli_sessions_sessions_list`.
 
 import { useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Clock, Copy, GitBranch, MessageSquare, Search } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -85,14 +85,19 @@ function compareSession(
 export function SessionsProjectPage() {
   const params = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const source = normalizeSource(params.source);
   const projectId = params.projectId || "";
   const safeSource: CliSessionsSource = source ?? "claude";
+  const distro = searchParams.get("distro") ?? undefined;
   const enabled = source != null && projectId.trim().length > 0;
 
-  const projectsQuery = useCliSessionsProjectsListQuery(safeSource);
-  const sessionsQuery = useCliSessionsSessionsListQuery(safeSource, projectId, { enabled });
+  const projectsQuery = useCliSessionsProjectsListQuery(safeSource, distro);
+  const sessionsQuery = useCliSessionsSessionsListQuery(safeSource, projectId, {
+    enabled,
+    wslDistro: distro,
+  });
   const sessions = useMemo(() => pickSessions(sessionsQuery.data), [sessionsQuery.data]);
   const [filterText, setFilterText] = useState("");
   const [sortKey, setSortKey] = useState<SessionSortKey>("recent");
@@ -143,6 +148,15 @@ export function SessionsProjectPage() {
     );
   }
 
+  const backUrl = distro
+    ? `/sessions?source=${source}&distro=${encodeURIComponent(distro)}`
+    : `/sessions?source=${source}`;
+
+  function buildSessionNavUrl(filePath: string) {
+    const base = `/sessions/${source}/${encodeURIComponent(projectId)}/session/${encodeURIComponent(filePath)}`;
+    return distro ? `${base}?distro=${encodeURIComponent(distro)}` : base;
+  }
+
   return (
     <div className="flex flex-col gap-6 h-full overflow-hidden">
       <PageHeader
@@ -150,7 +164,7 @@ export function SessionsProjectPage() {
         subtitle={project?.display_path}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" onClick={() => navigate(`/sessions?source=${source}`)}>
+            <Button variant="secondary" onClick={() => navigate(backUrl)}>
               <ArrowLeft className="h-4 w-4" />
               返回项目
             </Button>
@@ -176,6 +190,11 @@ export function SessionsProjectPage() {
               </div>
               <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                 来源：<span className="font-semibold">{source}</span>
+                {distro ? (
+                  <span className="ml-2 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                    WSL: {distro}
+                  </span>
+                ) : null}
               </div>
             </div>
             <Button
@@ -388,19 +407,17 @@ export function SessionsProjectPage() {
                         )}
                         tabIndex={0}
                         onClick={() =>
-                          navigate(
-                            `/sessions/${source}/${encodeURIComponent(projectId)}/session/${encodeURIComponent(session.file_path)}`,
-                            { state: { session } }
-                          )
+                          navigate(buildSessionNavUrl(session.file_path), {
+                            state: { session },
+                          })
                         }
                         onKeyDown={(e) => {
                           if (e.target !== e.currentTarget) return;
                           if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
-                            navigate(
-                              `/sessions/${source}/${encodeURIComponent(projectId)}/session/${encodeURIComponent(session.file_path)}`,
-                              { state: { session } }
-                            );
+                            navigate(buildSessionNavUrl(session.file_path), {
+                              state: { session },
+                            });
                           }
                         }}
                       >

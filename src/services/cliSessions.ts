@@ -10,6 +10,7 @@ export type CliSessionsProjectSummary = {
   session_count: number;
   last_modified: number | null;
   model_provider: string | null;
+  wsl_distro: string | null;
 };
 
 export type CliSessionsSessionSummary = {
@@ -26,6 +27,7 @@ export type CliSessionsSessionSummary = {
   cwd: string | null;
   model_provider: string | null;
   cli_version: string | null;
+  wsl_distro: string | null;
 };
 
 export type CliSessionsDisplayContentBlock =
@@ -53,23 +55,29 @@ export type CliSessionsPaginatedMessages = {
   has_more: boolean;
 };
 
-export async function cliSessionsProjectsList(source: CliSessionsSource) {
+export async function cliSessionsProjectsList(source: CliSessionsSource, wslDistro?: string) {
   return invokeService<CliSessionsProjectSummary[]>(
     "读取会话项目列表失败",
     "cli_sessions_projects_list",
     {
       source,
+      wslDistro: wslDistro ?? null,
     }
   );
 }
 
-export async function cliSessionsSessionsList(source: CliSessionsSource, projectId: string) {
+export async function cliSessionsSessionsList(
+  source: CliSessionsSource,
+  projectId: string,
+  wslDistro?: string
+) {
   return invokeService<CliSessionsSessionSummary[]>(
     "读取会话列表失败",
     "cli_sessions_sessions_list",
     {
       source,
       projectId,
+      wslDistro: wslDistro ?? null,
     }
   );
 }
@@ -80,6 +88,7 @@ export async function cliSessionsMessagesGet(input: {
   page: number;
   page_size: number;
   from_end: boolean;
+  wsl_distro?: string;
 }) {
   return invokeService<CliSessionsPaginatedMessages>(
     "读取会话消息失败",
@@ -90,6 +99,7 @@ export async function cliSessionsMessagesGet(input: {
       page: input.page,
       pageSize: input.page_size,
       fromEnd: input.from_end,
+      wslDistro: input.wsl_distro ?? null,
     }
   );
 }

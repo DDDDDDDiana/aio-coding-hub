@@ -60,6 +60,7 @@ const SESSION: CliSessionsSessionSummary = {
   cwd: "/working/dir",
   model_provider: "anthropic",
   cli_version: "1.2.3",
+  wsl_distro: null,
 };
 
 const MESSAGES: CliSessionsDisplayMessage[] = [
@@ -326,6 +327,7 @@ describe("pages/SessionsMessagesPage", () => {
       cwd: null,
       model_provider: null,
       cli_version: null,
+      wsl_distro: null,
     };
 
     renderWithRoute("/sessions/claude/proj1/session/f.json", {

@@ -246,9 +246,10 @@ export const providerLimitUsageKeys = {
 const cliSessionsAllKey = ["cliSessions"] as const;
 export const cliSessionsKeys = {
   all: cliSessionsAllKey,
-  projectsList: (source: CliSessionsSource) => [...cliSessionsAllKey, "projects", source] as const,
-  sessionsList: (source: CliSessionsSource, projectId: string) =>
-    [...cliSessionsAllKey, "sessions", source, projectId] as const,
-  messages: (source: CliSessionsSource, filePath: string, fromEnd = true) =>
-    [...cliSessionsAllKey, "messages", source, filePath, fromEnd] as const,
+  projectsList: (source: CliSessionsSource, wslDistro?: string) =>
+    [...cliSessionsAllKey, "projects", source, wslDistro ?? null] as const,
+  sessionsList: (source: CliSessionsSource, projectId: string, wslDistro?: string) =>
+    [...cliSessionsAllKey, "sessions", source, projectId, wslDistro ?? null] as const,
+  messages: (source: CliSessionsSource, filePath: string, fromEnd = true, wslDistro?: string) =>
+    [...cliSessionsAllKey, "messages", source, filePath, fromEnd, wslDistro ?? null] as const,
 };

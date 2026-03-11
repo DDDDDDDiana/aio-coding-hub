@@ -11,6 +11,7 @@ pub struct CliSessionsProjectSummary {
     pub session_count: usize,
     pub last_modified: Option<i64>,
     pub model_provider: Option<String>,
+    pub wsl_distro: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,6 +29,7 @@ pub struct CliSessionsSessionSummary {
     pub cwd: Option<String>,
     pub model_provider: Option<String>,
     pub cli_version: Option<String>,
+    pub wsl_distro: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

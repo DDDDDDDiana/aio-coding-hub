@@ -44,7 +44,15 @@ fn normalize_page_size(raw: usize) -> usize {
 pub fn projects_list(
     app: &tauri::AppHandle,
     source: CliSessionsSource,
+    wsl_distro: Option<&str>,
 ) -> AppResult<Vec<CliSessionsProjectSummary>> {
+    if let Some(distro) = wsl_distro {
+        crate::wsl::validate_distro(distro)?;
+        return match source {
+            CliSessionsSource::Claude => claude::wsl_projects_list(distro),
+            CliSessionsSource::Codex => codex::wsl_projects_list(distro),
+        };
+    }
     match source {
         CliSessionsSource::Claude => claude::projects_list(app),
         CliSessionsSource::Codex => codex::projects_list(app),
@@ -55,7 +63,15 @@ pub fn sessions_list(
     app: &tauri::AppHandle,
     source: CliSessionsSource,
     project_id: &str,
+    wsl_distro: Option<&str>,
 ) -> AppResult<Vec<CliSessionsSessionSummary>> {
+    if let Some(distro) = wsl_distro {
+        crate::wsl::validate_distro(distro)?;
+        return match source {
+            CliSessionsSource::Claude => claude::wsl_sessions_list(distro, project_id),
+            CliSessionsSource::Codex => codex::wsl_sessions_list(distro, project_id),
+        };
+    }
     match source {
         CliSessionsSource::Claude => claude::sessions_list(app, project_id),
         CliSessionsSource::Codex => codex::sessions_list(app, project_id),
@@ -69,8 +85,20 @@ pub fn messages_get(
     page: usize,
     page_size: usize,
     from_end: bool,
+    wsl_distro: Option<&str>,
 ) -> AppResult<CliSessionsPaginatedMessages> {
     let page_size = normalize_page_size(page_size);
+    if let Some(distro) = wsl_distro {
+        crate::wsl::validate_distro(distro)?;
+        return match source {
+            CliSessionsSource::Claude => {
+                claude::wsl_messages_get(distro, file_path, page, page_size, from_end)
+            }
+            CliSessionsSource::Codex => {
+                codex::wsl_messages_get(distro, file_path, page, page_size, from_end)
+            }
+        };
+    }
     match source {
         CliSessionsSource::Claude => {
             claude::messages_get(app, file_path, page, page_size, from_end)

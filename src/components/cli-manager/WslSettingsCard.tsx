@@ -7,12 +7,13 @@ import { useAppAboutQuery } from "../../query/appAbout";
 import { useSettingsSetMutation } from "../../query/settings";
 import { useWslConfigureClientsMutation, useWslOverviewQuery } from "../../query/wsl";
 import { Card } from "../../ui/Card";
+import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { Input } from "../../ui/Input";
 import { SettingsRow } from "../../ui/SettingsRow";
 import { Switch } from "../../ui/Switch";
 import { Button } from "../../ui/Button";
 import { cn } from "../../utils/cn";
-import { Boxes, RefreshCw, Check, X, Info } from "lucide-react";
+import { Boxes, RefreshCw, Info } from "lucide-react";
 
 export type WslSettingsCardProps = {
   available: boolean;
@@ -43,6 +44,8 @@ export function WslSettingsCard({ available, saving, settings }: WslSettingsCard
   const configuring = wslConfigureMutation.isPending;
 
   const [lastReport, setLastReport] = useState<WslConfigureReport | null>(null);
+  const [showListenModeDialog, setShowListenModeDialog] = useState(false);
+  const [switchingListenMode, setSwitchingListenMode] = useState(false);
 
   const wslDetected = Boolean(detection?.detected);
   const distros = detection?.distros ?? [];
@@ -60,30 +63,35 @@ export function WslSettingsCard({ available, saving, settings }: WslSettingsCard
     setCustomHostAddress(settings.wsl_custom_host_address);
   }, [settings.wsl_custom_host_address]);
 
-  // 监听后端启动时自动配置结果事件
+  // 监听后端启动时自动配置结果事件 + 监听模式切换提示
   useEffect(() => {
     if (!available || !wslSupported) return;
 
     let cancelled = false;
-    let cleanupFn: (() => void) | null = null;
+    const cleanupFns: (() => void)[] = [];
 
     import("@tauri-apps/api/event").then(({ listen }) => {
       if (cancelled) return;
+
       listen<WslConfigureReport>("wsl:auto_config_result", (event) => {
         setLastReport(event.payload);
         void wslOverviewQuery.refetch();
       }).then((unlisten) => {
-        if (cancelled) {
-          unlisten();
-        } else {
-          cleanupFn = unlisten;
-        }
+        if (cancelled) unlisten();
+        else cleanupFns.push(unlisten);
+      });
+
+      listen("wsl:localhost_switch_prompt", () => {
+        setShowListenModeDialog(true);
+      }).then((unlisten) => {
+        if (cancelled) unlisten();
+        else cleanupFns.push(unlisten);
       });
     });
 
     return () => {
       cancelled = true;
-      cleanupFn?.();
+      cleanupFns.forEach((fn) => fn());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [available, wslSupported]);
@@ -208,6 +216,50 @@ export function WslSettingsCard({ available, saving, settings }: WslSettingsCard
     }
   }
 
+  async function confirmSwitchListenMode() {
+    if (!available) return;
+    setSwitchingListenMode(true);
+    try {
+      const updated = await settingsSetMutation.mutateAsync({
+        preferredPort: settings.preferred_port,
+        autoStart: settings.auto_start,
+        logRetentionDays: settings.log_retention_days,
+        failoverMaxAttemptsPerProvider: settings.failover_max_attempts_per_provider,
+        failoverMaxProvidersToTry: settings.failover_max_providers_to_try,
+        gatewayListenMode: "wsl_auto",
+      });
+      if (updated) {
+        toast('已切换到"WSL 自动检测"模式');
+      }
+    } catch (err) {
+      logToConsole("error", "切换监听模式失败", { error: String(err) });
+      toast("切换监听模式失败：请稍后重试");
+    } finally {
+      setSwitchingListenMode(false);
+      setShowListenModeDialog(false);
+    }
+  }
+
+  async function commitWslAutoConfig(value: boolean) {
+    if (!available) return;
+    if (saving || settingsMutating) return;
+    try {
+      const updated = await settingsSetMutation.mutateAsync({
+        preferredPort: settings.preferred_port,
+        autoStart: settings.auto_start,
+        logRetentionDays: settings.log_retention_days,
+        failoverMaxAttemptsPerProvider: settings.failover_max_attempts_per_provider,
+        failoverMaxProvidersToTry: settings.failover_max_providers_to_try,
+        wslAutoConfig: value,
+      });
+      if (!updated) return;
+      toast("已保存");
+    } catch (err) {
+      logToConsole("error", "更新 WSL 自动同步设置失败", { error: String(err) });
+      toast("更新失败：请稍后重试");
+    }
+  }
+
   const listenModeIsLocalhost = settings.gateway_listen_mode === "localhost";
   const effectiveHost =
     hostAddressMode === "custom"
@@ -309,44 +361,95 @@ export function WslSettingsCard({ available, saving, settings }: WslSettingsCard
                         <td className="px-3 py-2 text-slate-700 dark:text-slate-300 font-mono text-xs">
                           {row.distro}
                         </td>
-                        <td className="px-3 py-2 text-center">
-                          {row.claude ? (
-                            <Check className="inline h-4 w-4 text-emerald-500" />
-                          ) : (
-                            <X className="inline h-4 w-4 text-rose-400" />
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-center">
-                          {row.codex ? (
-                            <Check className="inline h-4 w-4 text-emerald-500" />
-                          ) : (
-                            <X className="inline h-4 w-4 text-rose-400" />
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-center">
-                          {row.gemini ? (
-                            <Check className="inline h-4 w-4 text-emerald-500" />
-                          ) : (
-                            <X className="inline h-4 w-4 text-rose-400" />
-                          )}
-                        </td>
+                        {(
+                          [
+                            [
+                              "claude",
+                              row.claude,
+                              row.claude_mcp ?? false,
+                              row.claude_prompt ?? false,
+                            ],
+                            ["codex", row.codex, row.codex_mcp ?? false, row.codex_prompt ?? false],
+                            [
+                              "gemini",
+                              row.gemini,
+                              row.gemini_mcp ?? false,
+                              row.gemini_prompt ?? false,
+                            ],
+                          ] as [string, boolean, boolean, boolean][]
+                        ).map(([key, auth, mcp, prompt]) => (
+                          <td key={key} className="px-3 py-2">
+                            <div
+                              className="flex items-center justify-center gap-1.5"
+                              title={`Auth: ${auth ? "yes" : "no"}, MCP: ${mcp ? "yes" : "no"}, Prompt: ${prompt ? "yes" : "no"}`}
+                            >
+                              <span
+                                className={cn(
+                                  "inline-block h-2 w-2 rounded-full",
+                                  auth ? "bg-emerald-500" : "bg-slate-300 dark:bg-slate-600"
+                                )}
+                              />
+                              <span
+                                className={cn(
+                                  "inline-block h-2 w-2 rounded-full",
+                                  mcp ? "bg-blue-500" : "bg-slate-300 dark:bg-slate-600"
+                                )}
+                              />
+                              <span
+                                className={cn(
+                                  "inline-block h-2 w-2 rounded-full",
+                                  prompt ? "bg-violet-500" : "bg-slate-300 dark:bg-slate-600"
+                                )}
+                              />
+                            </div>
+                          </td>
+                        ))}
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              <div className="mt-1.5 flex items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400 px-1">
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" /> Auth
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-2 w-2 rounded-full bg-blue-500" /> MCP
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-2 w-2 rounded-full bg-violet-500" /> Prompt
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-2 w-2 rounded-full bg-slate-300 dark:bg-slate-600" />{" "}
+                  未配置
+                </span>
+              </div>
             </div>
           ) : null}
 
-          <div className="mt-3 space-y-2">
+          <div className="mt-3">
+            <SettingsRow label="自动同步配置">
+              <Switch
+                checked={settings.wsl_auto_config}
+                onCheckedChange={(checked) => void commitWslAutoConfig(checked)}
+                disabled={saving || settingsMutating}
+              />
+            </SettingsRow>
+          </div>
+
+          <div className="mt-2 space-y-2">
             <div className="flex items-start gap-2 text-xs text-slate-500 dark:text-slate-400">
               <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-              <span>应用启动时会自动检测并配置 WSL 环境。</span>
+              <span>
+                {settings.wsl_auto_config
+                  ? "已启用：应用启动时自动检测并配置 WSL 环境，修改相关设置时自动同步。"
+                  : '未启用：WSL 不会在启动时自动配置，可使用下方"立即配置"按钮手动执行。'}
+              </span>
             </div>
-            {listenModeIsLocalhost ? (
+            {listenModeIsLocalhost && settings.wsl_auto_config ? (
               <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
                 <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                <span>当前监听模式为"仅本地"，应用会在启动时自动切换监听模式以支持 WSL。</span>
+                <span>当前监听模式为"仅本地"，WSL 无法访问网关。启动时会提示切换监听模式。</span>
               </div>
             ) : null}
           </div>
@@ -369,6 +472,15 @@ export function WslSettingsCard({ available, saving, settings }: WslSettingsCard
               <RefreshCw className={cn("h-4 w-4", configuring && "animate-spin")} />
               立即配置
             </Button>
+          </div>
+
+          <div className="mt-2 flex items-start gap-2 text-xs text-slate-500 dark:text-slate-400">
+            <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span>
+              同步时会自动将 MCP 服务器配置和提示词模板同步到 WSL。stdio 类型 MCP
+              的命令路径会自动尝试转换（去除 .cmd/.bat 扩展名，Windows 绝对路径取文件名），但不保证
+              100% 正确。
+            </span>
           </div>
 
           <details className="mt-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/40">
@@ -432,6 +544,17 @@ export function WslSettingsCard({ available, saving, settings }: WslSettingsCard
           ) : null}
         </div>
       )}
+
+      <ConfirmDialog
+        open={showListenModeDialog}
+        title="检测到 WSL 环境"
+        description={'网关监听模式为"仅本地"，WSL 无法访问网关。是否切换到"WSL 自动检测"模式？'}
+        onClose={() => setShowListenModeDialog(false)}
+        onConfirm={() => void confirmSwitchListenMode()}
+        confirmLabel="切换"
+        confirmingLabel="切换中..."
+        confirming={switchingListenMode}
+      />
     </Card>
   );
 }

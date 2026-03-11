@@ -468,6 +468,7 @@ pub fn projects_list(app: &tauri::AppHandle) -> AppResult<Vec<CliSessionsProject
             session_count,
             last_modified: modified,
             model_provider: None,
+            wsl_distro: None,
         });
     }
 
@@ -556,6 +557,7 @@ pub fn sessions_list(
                 cwd: None,
                 model_provider: None,
                 cli_version: None,
+                wsl_distro: None,
             });
         }
     }
@@ -591,6 +593,7 @@ pub fn sessions_list(
             cwd: None,
             model_provider: None,
             cli_version: None,
+            wsl_distro: None,
         });
     }
 
@@ -606,6 +609,243 @@ pub fn messages_get(
     from_end: bool,
 ) -> AppResult<CliSessionsPaginatedMessages> {
     let resolved = resolve_and_validate_session_file_path(app, file_path)?;
+    let messages = parse_all_messages(&resolved).map_err(AppError::from)?;
+
+    let total = messages.len();
+    let (start, end, has_more) = if from_end {
+        let end = total.saturating_sub(page * page_size);
+        let start = end.saturating_sub(page_size);
+        let has_more = start > 0;
+        (start, end, has_more)
+    } else {
+        let start = page * page_size;
+        let end = (start + page_size).min(total);
+        let has_more = end < total;
+        (start, end, has_more)
+    };
+
+    let page_messages = if start < end && end <= total {
+        messages[start..end].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    Ok(CliSessionsPaginatedMessages {
+        messages: page_messages,
+        total,
+        page,
+        page_size,
+        has_more,
+    })
+}
+
+// ── WSL support ─────────────────────────────────────────────────────────────
+
+/// Decode a WSL project directory name into a Unix path.
+/// e.g. `home-diao-project` → `/home/diao/project`
+fn decode_project_path_unix(encoded: &str) -> String {
+    format!("/{}", encoded.replace('-', "/"))
+}
+
+fn wsl_claude_projects_dir(distro: &str) -> AppResult<PathBuf> {
+    let home = crate::wsl::resolve_wsl_home_unc(distro)?;
+    Ok(home.join(".claude").join("projects"))
+}
+
+pub fn wsl_projects_list(distro: &str) -> AppResult<Vec<CliSessionsProjectSummary>> {
+    let projects_dir = wsl_claude_projects_dir(distro)?;
+    if !projects_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut out: Vec<CliSessionsProjectSummary> = Vec::new();
+
+    let entries = fs::read_dir(&projects_dir).map_err(|e| {
+        AppError::new(
+            "INTERNAL_ERROR",
+            format!("failed to read WSL claude projects dir: {e}"),
+        )
+    })?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let encoded_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) if !name.trim().is_empty() => name.to_string(),
+            _ => continue,
+        };
+
+        let session_count = count_jsonl_files(&path);
+        if session_count == 0 {
+            continue;
+        }
+
+        let original_path = read_sessions_index(&path)
+            .and_then(|idx| idx.original_path)
+            .unwrap_or_else(|| decode_project_path_unix(&encoded_name));
+
+        let short_name = short_name_from_path(&original_path);
+        let (_, modified) = file_times(&path);
+
+        out.push(CliSessionsProjectSummary {
+            source: "claude".to_string(),
+            id: encoded_name,
+            display_path: original_path,
+            short_name,
+            session_count,
+            last_modified: modified,
+            model_provider: None,
+            wsl_distro: Some(distro.to_string()),
+        });
+    }
+
+    out.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    Ok(out)
+}
+
+pub fn wsl_sessions_list(
+    distro: &str,
+    project_id: &str,
+) -> AppResult<Vec<CliSessionsSessionSummary>> {
+    validate_project_id(project_id)?;
+
+    let projects_dir = wsl_claude_projects_dir(distro)?;
+    let project_dir = projects_dir.join(project_id);
+    if !project_dir.is_dir() {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            format!("project not found in WSL: {project_id}"),
+        ));
+    }
+
+    let index = read_sessions_index(&project_dir);
+    let original_path = index.as_ref().and_then(|idx| idx.original_path.clone());
+    let default_project_path = original_path
+        .clone()
+        .unwrap_or_else(|| decode_project_path_unix(project_id));
+
+    let mut disk_sessions: HashMap<String, PathBuf> = HashMap::new();
+    if let Ok(rd) = fs::read_dir(&project_dir) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if !stem.trim().is_empty() {
+                        disk_sessions.insert(stem.to_string(), path);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<CliSessionsSessionSummary> = Vec::new();
+    let mut indexed: HashSet<String> = HashSet::new();
+    let distro_opt = Some(distro.to_string());
+
+    if let Some(index) = index {
+        for entry in index.entries {
+            indexed.insert(entry.session_id.clone());
+            let file_path = entry
+                .full_path
+                .clone()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| project_dir.join(format!("{}.jsonl", entry.session_id)));
+            if validate_path_under_root(&file_path, &projects_dir).is_err() {
+                continue;
+            }
+            if !file_path.exists() {
+                continue;
+            }
+
+            let (created_at, modified_at) = file_times(&file_path);
+            let first_prompt = entry
+                .first_prompt
+                .clone()
+                .or_else(|| extract_first_prompt(&file_path));
+            let message_count = entry
+                .message_count
+                .unwrap_or_else(|| count_messages(&file_path));
+
+            out.push(CliSessionsSessionSummary {
+                source: "claude".to_string(),
+                session_id: entry.session_id,
+                file_path: file_path.to_string_lossy().to_string(),
+                first_prompt,
+                message_count,
+                created_at,
+                modified_at,
+                git_branch: entry.git_branch,
+                project_path: entry
+                    .project_path
+                    .or_else(|| original_path.clone())
+                    .or_else(|| Some(default_project_path.clone())),
+                is_sidechain: entry.is_sidechain,
+                cwd: None,
+                model_provider: None,
+                cli_version: None,
+                wsl_distro: distro_opt.clone(),
+            });
+        }
+    }
+
+    for (session_id, file_path) in disk_sessions {
+        if indexed.contains(&session_id) {
+            continue;
+        }
+        if validate_path_under_root(&file_path, &projects_dir).is_err() {
+            continue;
+        }
+        let (created_at, modified_at) = file_times(&file_path);
+        let first_prompt = extract_first_prompt(&file_path);
+        let message_count = count_messages(&file_path);
+        if message_count == 0 {
+            continue;
+        }
+
+        out.push(CliSessionsSessionSummary {
+            source: "claude".to_string(),
+            session_id,
+            file_path: file_path.to_string_lossy().to_string(),
+            first_prompt,
+            message_count,
+            created_at,
+            modified_at,
+            git_branch: None,
+            project_path: original_path
+                .clone()
+                .or_else(|| Some(default_project_path.clone())),
+            is_sidechain: None,
+            cwd: None,
+            model_provider: None,
+            cli_version: None,
+            wsl_distro: distro_opt.clone(),
+        });
+    }
+
+    out.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    Ok(out)
+}
+
+pub fn wsl_messages_get(
+    distro: &str,
+    file_path: &str,
+    page: usize,
+    page_size: usize,
+    from_end: bool,
+) -> AppResult<CliSessionsPaginatedMessages> {
+    let root = wsl_claude_projects_dir(distro)?;
+    let raw = PathBuf::from(file_path);
+    if raw.extension().map(|e| e != "jsonl").unwrap_or(true) {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            "filePath must be a .jsonl file",
+        ));
+    }
+
+    let resolved = super::validate_path_under_root(&raw, &root)?;
     let messages = parse_all_messages(&resolved).map_err(AppError::from)?;
 
     let total = messages.len();

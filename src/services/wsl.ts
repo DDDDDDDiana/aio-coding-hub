@@ -10,6 +10,12 @@ export type WslDistroConfigStatus = {
   claude: boolean;
   codex: boolean;
   gemini: boolean;
+  claude_mcp?: boolean;
+  codex_mcp?: boolean;
+  gemini_mcp?: boolean;
+  claude_prompt?: boolean;
+  codex_prompt?: boolean;
+  gemini_prompt?: boolean;
 };
 
 export type WslConfigureCliReport = {

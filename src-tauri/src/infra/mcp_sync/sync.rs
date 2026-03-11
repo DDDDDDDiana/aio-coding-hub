@@ -11,7 +11,7 @@ use super::manifest::{backup_for_enable, read_manifest, write_manifest};
 use super::paths::{mcp_target_path, validate_cli_key};
 use super::McpServerForSync;
 
-fn build_next_bytes(
+pub(crate) fn build_next_bytes(
     cli_key: &str,
     current: Option<Vec<u8>>,
     managed_keys: &[String],

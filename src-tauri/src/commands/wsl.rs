@@ -149,10 +149,33 @@ pub(crate) async fn wsl_configure_clients(
         codex: true,
         gemini: true,
     };
+
+    // Gather MCP and Prompt sync data from DB
+    let (mcp_data, prompt_data) = blocking::run("wsl_configure_gather_sync_data", {
+        let db = db.clone();
+        let app = app.clone();
+        let first_distro = distros.first().cloned().unwrap_or_default();
+        move || -> crate::shared::error::AppResult<(wsl::WslMcpSyncData, wsl::WslPromptSyncData)> {
+            let conn = db.open_connection()?;
+            let mcp = wsl::gather_mcp_sync_data(&conn, &app, &first_distro)?;
+            let prompts = wsl::gather_prompt_sync_data(&conn)?;
+            Ok((mcp, prompts))
+        }
+    })
+    .await?;
+
+    let app_for_sync = app.clone();
     let report = blocking::run(
         "wsl_configure_clients",
         move || -> crate::shared::error::AppResult<wsl::WslConfigureReport> {
-            Ok(wsl::configure_clients(&distros, &targets, &proxy_origin))
+            Ok(wsl::configure_clients(
+                &distros,
+                &targets,
+                &proxy_origin,
+                Some(&app_for_sync),
+                Some(&mcp_data),
+                Some(&prompt_data),
+            ))
         },
     )
     .await?;
@@ -161,12 +184,12 @@ pub(crate) async fn wsl_configure_clients(
 }
 
 /// WSL startup auto-configure: detect WSL environment and configure all CLI clients.
-/// If the current listen mode is localhost, automatically switch to wsl_auto and restart the gateway.
+/// If the current listen mode is localhost, emit an event to prompt the user to switch.
 #[cfg(windows)]
 pub(crate) async fn wsl_auto_configure_on_startup(
     app: &tauri::AppHandle,
     db: db::Db,
-    mut listen_mode: settings::GatewayListenMode,
+    listen_mode: settings::GatewayListenMode,
     gateway_port: Option<u16>,
 ) -> Result<(), String> {
     // 1. Detect WSL
@@ -188,82 +211,23 @@ pub(crate) async fn wsl_auto_configure_on_startup(
         detection.distros.len()
     );
 
-    // 2. If listen mode is localhost, switch to wsl_auto and restart gateway
+    // 2. If listen mode is localhost, prompt the user to switch instead of auto-switching
     if listen_mode == settings::GatewayListenMode::Localhost {
         tracing::info!(
-            "WSL startup auto-configure: listen mode is localhost, switching to wsl_auto"
+            "WSL startup auto-configure: listen mode is localhost, prompting user to switch"
         );
-
-        if let Err(err) = blocking::run("wsl_startup_switch_listen_mode", {
-            let app = app.clone();
-            move || -> crate::shared::error::AppResult<()> {
-                let mut cfg = settings::read(&app).unwrap_or_default();
-                cfg.gateway_listen_mode = settings::GatewayListenMode::WslAuto;
-                settings::write(&app, &cfg)?;
-                Ok(())
-            }
-        })
-        .await
-        {
-            tracing::error!(
-                "WSL startup auto-configure: switch listen mode failed: {}",
-                err
-            );
-            let report = wsl::WslConfigureReport {
-                ok: false,
-                message: format!("自动切换监听模式失败：{err}"),
-                distros: Vec::new(),
-            };
-            let _ = app.emit("wsl:auto_config_result", &report);
-            return Err(format!("switch listen mode failed: {err}"));
-        }
-
-        listen_mode = settings::GatewayListenMode::WslAuto;
-        tracing::info!("WSL startup auto-configure: listen mode switched to wsl_auto");
-
-        // Restart gateway to apply new listen mode.
-        // IMPORTANT: must stop tasks gracefully; otherwise restarting may leak background tasks.
-        crate::app::cleanup::stop_gateway_best_effort(app).await;
-
-        let status = match blocking::run("wsl_startup_restart_gateway", {
-            let app = app.clone();
-            let db = db.clone();
-            let preferred_port = gateway_port;
-            move || {
-                let state = app.state::<GatewayState>();
-                let mut manager = state.0.lock_or_recover();
-                manager.start(&app, db, preferred_port)
-            }
-        })
-        .await
-        {
-            Ok(status) => status,
-            Err(err) => {
-                tracing::error!(
-                    "WSL startup auto-configure: gateway restart failed: {}",
-                    err
-                );
-                let report = wsl::WslConfigureReport {
-                    ok: false,
-                    message: format!("重启网关失败：{err}"),
-                    distros: Vec::new(),
-                };
-                let _ = app.emit("wsl:auto_config_result", &report);
-                return Err(format!("gateway restart failed: {err}"));
-            }
-        };
-
-        let _ = app.emit("gateway:status", &status);
-        return do_wsl_auto_configure(app, &detection.distros, listen_mode, status.port).await;
+        let _ = app.emit("wsl:localhost_switch_prompt", ());
+        return Ok(());
     }
 
     // 3. Execute configuration with existing settings
-    do_wsl_auto_configure(app, &detection.distros, listen_mode, gateway_port).await
+    do_wsl_auto_configure(app, db, &detection.distros, listen_mode, gateway_port).await
 }
 
 #[cfg(windows)]
 async fn do_wsl_auto_configure(
     app: &tauri::AppHandle,
+    db: db::Db,
     distros: &[String],
     listen_mode: settings::GatewayListenMode,
     gateway_port: Option<u16>,
@@ -318,7 +282,23 @@ async fn do_wsl_auto_configure(
         gemini: true,
     };
 
+    // Gather MCP and Prompt sync data
+    let (mcp_data, prompt_data) = blocking::run("wsl_startup_gather_sync_data", {
+        let db = db.clone();
+        let app = app.clone();
+        let first_distro = distros.first().cloned().unwrap_or_default();
+        move || -> crate::shared::error::AppResult<(wsl::WslMcpSyncData, wsl::WslPromptSyncData)> {
+            let conn = db.open_connection()?;
+            let mcp = wsl::gather_mcp_sync_data(&conn, &app, &first_distro)?;
+            let prompts = wsl::gather_prompt_sync_data(&conn)?;
+            Ok((mcp, prompts))
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
     let distros_owned = distros.to_vec();
+    let app_for_sync = app.clone();
     let report = blocking::run(
         "wsl_startup_configure",
         move || -> crate::shared::error::AppResult<wsl::WslConfigureReport> {
@@ -326,6 +306,9 @@ async fn do_wsl_auto_configure(
                 &distros_owned,
                 &targets,
                 &proxy_origin,
+                Some(&app_for_sync),
+                Some(&mcp_data),
+                Some(&prompt_data),
             ))
         },
     )

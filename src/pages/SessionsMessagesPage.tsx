@@ -1,7 +1,7 @@
 // Usage: Session messages viewer. Backend command: `cli_sessions_messages_get`.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowLeft, Copy, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -165,10 +165,12 @@ function avatarTextForRole(roleRaw: string) {
 export function SessionsMessagesPage() {
   const params = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const source = normalizeSource(params.source);
   const projectId = params.projectId || "";
   const safeSource: CliSessionsSource = source ?? "claude";
+  const distro = searchParams.get("distro") ?? undefined;
 
   const rawFilePath = params["*"] || "";
   const filePath = rawFilePath ? safeDecodeURIComponent(rawFilePath) : "";
@@ -185,6 +187,7 @@ export function SessionsMessagesPage() {
   const messagesQuery = useCliSessionsMessagesInfiniteQuery(safeSource, filePath, {
     enabled,
     fromEnd: false,
+    wslDistro: distro,
   });
   const allMessages = useMemo(() => {
     return messagesQuery.data?.pages.flatMap((page) => page?.messages ?? []) ?? [];
@@ -237,18 +240,26 @@ export function SessionsMessagesPage() {
       <ErrorState
         title="会话信息缺失"
         message="无法获取会话元数据。请从会话列表页进入。"
-        onRetry={() =>
-          navigate(`/sessions/${source}/${encodeURIComponent(projectId)}`, { replace: true })
-        }
+        onRetry={() => {
+          const backUrl = distro
+            ? `/sessions/${source}/${encodeURIComponent(projectId)}?distro=${encodeURIComponent(distro)}`
+            : `/sessions/${source}/${encodeURIComponent(projectId)}`;
+          navigate(backUrl, { replace: true });
+        }}
       />
     );
   }
+
+  const backUrl = distro
+    ? `/sessions/${source}/${encodeURIComponent(projectId)}?distro=${encodeURIComponent(distro)}`
+    : `/sessions/${source}/${encodeURIComponent(projectId)}`;
 
   const title = session?.first_prompt?.trim() || session?.session_id || "Session";
   const subtitleParts: string[] = [];
   if (session?.session_id) subtitleParts.push(`Session ID：${session.session_id}`);
   if (session?.git_branch) subtitleParts.push(`分支：${session.git_branch}`);
   if (session?.model_provider) subtitleParts.push(`Provider：${session.model_provider}`);
+  if (distro) subtitleParts.push(`WSL: ${distro}`);
   const subtitle = subtitleParts.length > 0 ? subtitleParts.join(" · ") : undefined;
   const canCopyResume = Boolean(session?.session_id?.trim());
   const loadedCount = allMessages.length;
@@ -260,10 +271,7 @@ export function SessionsMessagesPage() {
         title={title}
         subtitle={subtitle}
         actions={
-          <Button
-            variant="secondary"
-            onClick={() => navigate(`/sessions/${source}/${encodeURIComponent(projectId)}`)}
-          >
+          <Button variant="secondary" onClick={() => navigate(backUrl)}>
             <ArrowLeft className="h-4 w-4" />
             返回会话
           </Button>
@@ -402,6 +410,14 @@ export function SessionsMessagesPage() {
                   {source}
                 </span>
               </div>
+              {distro ? (
+                <div className="flex items-start justify-between gap-3">
+                  <span className="shrink-0 text-slate-500 dark:text-slate-500">环境</span>
+                  <span className="font-mono text-[11px] text-slate-700 dark:text-slate-300">
+                    WSL: {distro}
+                  </span>
+                </div>
+              ) : null}
               {session?.git_branch ? (
                 <div className="flex items-start justify-between gap-3">
                   <span className="shrink-0 text-slate-500 dark:text-slate-500">分支</span>
