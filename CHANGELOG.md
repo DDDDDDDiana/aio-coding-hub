@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.2](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.31.1...aio-coding-hub-v0.31.2) (2026-03-14)
+
+
+### Bug Fixes
+
+* **tauri:** 修复注册表键句柄初始化问题 ([6f468c9](https://github.com/dyndynjyxa/aio-coding-hub/commit/6f468c9a692e1b7aa8bd343a8ce74ce07d7ad813))
+
 ## [0.31.1](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.31.0...aio-coding-hub-v0.31.1) (2026-03-14)
 
 
