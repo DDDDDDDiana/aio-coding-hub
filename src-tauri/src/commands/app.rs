@@ -29,7 +29,18 @@ pub(crate) fn app_about_get() -> AppAboutInfo {
         Some(BundleType::Nsis | BundleType::Msi | BundleType::Deb | BundleType::Rpm) => "installer",
         Some(BundleType::AppImage) => "portable",
         Some(BundleType::App | BundleType::Dmg) => "unknown",
-        None => "unknown",
+        None => {
+            // On Windows, BundleType::None means the exe is NOT running from an
+            // MSI or NSIS install, so it must be a portable (ZIP) deployment.
+            #[cfg(windows)]
+            {
+                "portable"
+            }
+            #[cfg(not(windows))]
+            {
+                "unknown"
+            }
+        }
     }
     .to_string();
 

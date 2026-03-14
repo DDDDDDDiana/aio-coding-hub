@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "aio-coding-hub"
-version = "0.30.15"
+version = "0.31.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -72,6 +72,7 @@ dependencies = [
  "tracing-appender",
  "tracing-log",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
  "zip",
 ]
 

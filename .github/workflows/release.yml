@@ -288,6 +288,48 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$app_path" "$out"
           echo "Created zip: $out"
 
+      - name: Build Windows portable ZIP
+        if: startsWith(matrix.updater_platform, 'windows-')
+        shell: pwsh
+        run: |
+          $label = "${{ matrix.stable_label }}"
+          $targetDir = "src-tauri/target/${{ matrix.target }}/release"
+
+          # Find the built application exe (not the NSIS/MSI installer)
+          $exeName = "AIO Coding Hub.exe"
+          $exePath = Join-Path $targetDir $exeName
+
+          if (-not (Test-Path $exePath)) {
+            $exeName = "aio-coding-hub.exe"
+            $exePath = Join-Path $targetDir $exeName
+          }
+
+          if (-not (Test-Path $exePath)) {
+            Write-Error "Cannot find built exe in $targetDir"
+            Get-ChildItem $targetDir -Filter "*.exe" | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+
+          # Create a temp directory for the portable package
+          $portableDir = "portable-build/AIO Coding Hub"
+          New-Item -ItemType Directory -Path $portableDir -Force | Out-Null
+
+          # Copy the exe
+          Copy-Item $exePath $portableDir
+
+          # Copy resources if they exist (icons, webview assets, etc.)
+          $resourceDir = Join-Path $targetDir "resources"
+          if (Test-Path $resourceDir) {
+            Copy-Item -Recurse $resourceDir (Join-Path $portableDir "resources")
+          }
+
+          # Create the ZIP
+          $zipPath = "stable-assets/aio-coding-hub-${label}-portable.zip"
+          Compress-Archive -Path "$portableDir/*" -DestinationPath $zipPath -Force
+
+          Write-Host "Created portable ZIP: $zipPath"
+          Get-Item $zipPath | Select-Object Name, Length
+
       - name: Upload stable assets (workflow artifact)
         uses: actions/upload-artifact@v4
         with:
