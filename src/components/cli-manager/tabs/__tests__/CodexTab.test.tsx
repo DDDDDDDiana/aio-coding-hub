@@ -38,7 +38,6 @@ function createCodexConfig(overrides: Partial<any> = {}) {
     features_apply_patch_freeform: false,
     features_remote_compaction: false,
     features_fast_mode: false,
-    features_remote_models: false,
     features_responses_websockets_v2: false,
     features_multi_agent: false,
     ...overrides,

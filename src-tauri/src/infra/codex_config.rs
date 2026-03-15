@@ -33,7 +33,6 @@ pub struct CodexConfigState {
     pub features_exec_policy: Option<bool>,
     pub features_remote_compaction: Option<bool>,
     pub features_fast_mode: Option<bool>,
-    pub features_remote_models: Option<bool>,
     pub features_responses_websockets_v2: Option<bool>,
     pub features_multi_agent: Option<bool>,
 }
@@ -62,7 +61,6 @@ pub struct CodexConfigPatch {
     pub features_exec_policy: Option<bool>,
     pub features_remote_compaction: Option<bool>,
     pub features_fast_mode: Option<bool>,
-    pub features_remote_models: Option<bool>,
     pub features_responses_websockets_v2: Option<bool>,
     pub features_multi_agent: Option<bool>,
 }
@@ -570,7 +568,7 @@ enum TableStyle {
     Dotted,
 }
 
-const FEATURES_KEY_ORDER: [&str; 10] = [
+const FEATURES_KEY_ORDER: [&str; 9] = [
     // Keep a stable persisted order for feature flags in config.toml.
     "shell_snapshot",
     "unified_exec",
@@ -579,7 +577,6 @@ const FEATURES_KEY_ORDER: [&str; 10] = [
     "apply_patch_freeform",
     "remote_compaction",
     "fast_mode",
-    "remote_models",
     "responses_websockets_v2",
     "multi_agent",
 ];
@@ -904,7 +901,6 @@ fn make_state_from_bytes(
         features_exec_policy: None,
         features_remote_compaction: None,
         features_fast_mode: None,
-        features_remote_models: None,
         features_responses_websockets_v2: None,
         features_multi_agent: None,
     };
@@ -1005,7 +1001,6 @@ fn make_state_from_bytes(
                 state.features_remote_compaction = parse_bool(&raw_value)
             }
             ("features", "fast_mode") => state.features_fast_mode = parse_bool(&raw_value),
-            ("features", "remote_models") => state.features_remote_models = parse_bool(&raw_value),
             ("features", "responses_websockets_v2") => {
                 state.features_responses_websockets_v2 = parse_bool(&raw_value)
             }
@@ -1344,6 +1339,15 @@ fn patch_config_toml(
         input.lines().map(|l| l.to_string()).collect()
     };
 
+    // Cleanup retired feature keys on any save so config.toml converges to the
+    // current contract instead of preserving dead toggles indefinitely.
+    upsert_keys_auto_style(
+        &mut lines,
+        "features",
+        &["remote_models"],
+        vec![("remote_models", None)],
+    );
+
     if let Some(raw) = patch.model.as_deref() {
         let trimmed = raw.trim();
         upsert_root_key(
@@ -1445,7 +1449,6 @@ fn patch_config_toml(
         || patch.features_exec_policy.is_some()
         || patch.features_remote_compaction.is_some()
         || patch.features_fast_mode.is_some()
-        || patch.features_remote_models.is_some()
         || patch.features_responses_websockets_v2.is_some()
         || patch.features_multi_agent.is_some();
 
@@ -1473,9 +1476,6 @@ fn patch_config_toml(
         }
         if let Some(v) = patch.features_fast_mode {
             items.push(("fast_mode", v.then(|| "true".to_string())));
-        }
-        if let Some(v) = patch.features_remote_models {
-            items.push(("remote_models", v.then(|| "true".to_string())));
         }
         if let Some(v) = patch.features_responses_websockets_v2 {
             items.push(("responses_websockets_v2", v.then(|| "true".to_string())));

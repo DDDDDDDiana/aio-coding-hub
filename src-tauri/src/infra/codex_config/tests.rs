@@ -20,7 +20,6 @@ fn empty_patch() -> CodexConfigPatch {
         features_exec_policy: None,
         features_remote_compaction: None,
         features_fast_mode: None,
-        features_remote_models: None,
         features_responses_websockets_v2: None,
         features_multi_agent: None,
     }
@@ -297,6 +296,27 @@ responses_websockets_v2 = true
     let s = String::from_utf8(out).expect("utf8");
     assert!(!s.contains("personality ="), "{s}");
     assert!(!s.contains("responses_websockets_v2 ="), "{s}");
+}
+
+#[test]
+fn patch_removes_legacy_remote_models_key_on_any_save() {
+    let input = r#"[features]
+remote_models = true
+remote_compaction = true
+"#;
+
+    let out = patch_config_toml(
+        Some(input.as_bytes().to_vec()),
+        CodexConfigPatch {
+            features_remote_compaction: Some(true),
+            ..empty_patch()
+        },
+    )
+    .expect("patch_config_toml");
+
+    let s = String::from_utf8(out).expect("utf8");
+    assert!(!s.contains("remote_models ="), "{s}");
+    assert!(s.contains("remote_compaction = true"), "{s}");
 }
 
 #[test]

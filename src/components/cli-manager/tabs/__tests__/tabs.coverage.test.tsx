@@ -104,7 +104,6 @@ describe("cli-manager tabs (coverage)", () => {
           features_exec_policy: true,
           features_remote_compaction: true,
           features_fast_mode: true,
-          features_remote_models: true,
           features_responses_websockets_v2: true,
           features_multi_agent: true,
         }}

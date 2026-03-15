@@ -76,7 +76,7 @@ fn codex_config_updates_are_preserved_when_cli_proxy_enabled() {
     let _ = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
         &handle,
         serde_json::json!({
-            "features_remote_models": true,
+            "features_responses_websockets_v2": true,
             "features_remote_compaction": true
         }),
     )
@@ -86,7 +86,7 @@ fn codex_config_updates_are_preserved_when_cli_proxy_enabled() {
         aio_coding_hub_lib::test_support::codex_config_toml_path(&handle).expect("codex path");
     let before_restore = read_text(&config_path);
     assert!(
-        before_restore.contains("remote_models = true"),
+        before_restore.contains("responses_websockets_v2 = true"),
         "{before_restore}"
     );
     assert!(
@@ -120,7 +120,7 @@ fn codex_config_updates_are_preserved_when_cli_proxy_enabled() {
 
     let after_restore = read_text(&config_path);
     assert!(
-        after_restore.contains("remote_models = true"),
+        after_restore.contains("responses_websockets_v2 = true"),
         "{after_restore}"
     );
     assert!(
