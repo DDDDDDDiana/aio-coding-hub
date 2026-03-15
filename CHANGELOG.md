@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.32.1](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.32.0...aio-coding-hub-v0.32.1) (2026-03-15)
+
+
+### Features
+
+* **config:** 新增 personality 输出风格和 websocket 实验功能支持 ([a8df6f1](https://github.com/dyndynjyxa/aio-coding-hub/commit/a8df6f1e9bfef48ded10f0175fb95ee028e933a5))
+* **providers:** 在供应商列表页增加名称搜索功能 ([a8df6f1](https://github.com/dyndynjyxa/aio-coding-hub/commit/a8df6f1e9bfef48ded10f0175fb95ee028e933a5))
+
+
+### Bug Fixes
+
+* **prompts:** 修改新增和编辑时 Prompt 保存按钮禁用条件 ([a8df6f1](https://github.com/dyndynjyxa/aio-coding-hub/commit/a8df6f1e9bfef48ded10f0175fb95ee028e933a5))
+* **providers:** 敏感配置信息变更时清理运行时 session 绑定 ([a8df6f1](https://github.com/dyndynjyxa/aio-coding-hub/commit/a8df6f1e9bfef48ded10f0175fb95ee028e933a5))
+
 ## [0.32.0](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.31.2...aio-coding-hub-v0.32.0) (2026-03-14)
 
 
